@@ -5,10 +5,9 @@
 
 # Get LSB functions
 . /lib/lsb/init-functions
-#. /etc/default/rcS
+. /etc/default/rcS
 
-#SRB2MS=/usr/local/bin/masterserver
-SRB2MS=./server
+SRB2MS=/usr/local/bin/masterserver
 SRB2MS_PORT=28900
 
 # Check that the package is still installed
@@ -16,9 +15,11 @@ SRB2MS_PORT=28900
 
 case "$1" in
 	start)
-		log_begin_msg "Starting SRB2MS...\n"
+		log_begin_msg "Starting SRB2MS..."
 		umask 002
-		if exec $SRB2MS $SRB2MS_PORT & then
+		if start-stop-daemon --start \
+		--exec $SRB2MS \
+		-- $SRB2MS_PORT; then
 			log_end_msg 0
 		else
 			log_end_msg $?
@@ -26,11 +27,11 @@ case "$1" in
 	;;
 
 	stop)
-		log_begin_msg "Stopping SRB2MS...\n"
-		if killall $SRB2MS -q & then
-			log_end_msg 0
+		log_begin_msg "Stopping SRB2MS..."
+		if start-stop-daemon --stop --exec $SRB2MS; then
+		log_end_msg 0
 		else
-			log_end_msg $?
+		log_end_msg $?
 		fi
 	;;
 
@@ -39,7 +40,7 @@ case "$1" in
 	;;
 
 	*)
-	echo "Usage: $0 {start|stop|restart|force-reload}"
+	e	cho "Usage: /etc/init.d/masterserver {start|stop|restart|force-reload}"
 		exit 1
 	;;
 esac

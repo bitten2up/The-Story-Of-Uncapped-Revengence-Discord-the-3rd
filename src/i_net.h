@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
+// Copyright (C) 1999-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -77,19 +77,11 @@ typedef struct
 	char data[MAXPACKETLENGTH];
 } ATTRPACK doomcom_t;
 
-typedef struct
-{
-	INT32 magic;
-	INT32 addr;
-	INT16 port;
-} ATTRPACK holepunch_t;
-
 #if defined(_MSC_VER)
 #pragma pack()
 #endif
 
 extern doomcom_t *doomcom;
-extern holepunch_t *holepunchpacket;
 
 /**	\brief return packet in doomcom struct
 */
@@ -146,14 +138,6 @@ extern boolean (*I_NetOpenSocket)(void);
 /**	\brief close all connections no more allow geting any packet
 */
 extern void (*I_NetCloseSocket)(void);
-
-/**	\brief send a hole punching request
-*/
-extern void (*I_NetRequestHolePunch)(INT32 node);
-
-/**	\brief register this machine on the hole punching server
-*/
-extern void (*I_NetRegisterHolePunch)(void);
 
 
 extern boolean (*I_Ban) (INT32 node);

@@ -1,8 +1,7 @@
 // SONIC ROBO BLAST 2
 //-----------------------------------------------------------------------------
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
-// Copyright (C) 2020-2022 by James R.
+// Copyright (C) 1999-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -14,7 +13,7 @@
 #ifndef _MSERV_H_
 #define _MSERV_H_
 
-#include "i_threads.h"
+#define MASTERSERVERS21 // MasterServer v2.1
 
 // lowered from 32 due to menu changes
 #define NUM_LIST_ROOMS 16
@@ -64,48 +63,34 @@ typedef struct
 
 // ================================ GLOBALS ===============================
 
-extern consvar_t cv_masterserver, cv_holepunchserver, cv_servername;
-extern consvar_t cv_masterserver_update_rate;
-extern consvar_t cv_masterserver_timeout;
-extern consvar_t cv_masterserver_debug;
-extern consvar_t cv_masterserver_token;
+extern consvar_t cv_masterserver, cv_servername;
 
 // < 0 to not connect (usually -1) (offline mode)
 // == 0 to show all rooms, not a valid hosting room
 // anything else is whatever room the MS assigns to that number (online mode)
-extern INT16 ms_RoomId;
+INT16 ms_RoomId;
 
-#ifdef HAVE_THREADS
-extern int           ms_QueryId;
-extern I_mutex       ms_QueryId_mutex;
+const char *GetMasterServerPort(void);
+const char *GetMasterServerIP(void);
 
-extern msg_server_t *ms_ServerList;
-extern I_mutex       ms_ServerList_mutex;
-#endif
+void MSOpenUDPSocket(void);
+void MSCloseUDPSocket(void);
+
+void SendAskInfoViaMS(INT32 node, tic_t asktime);
 
 void RegisterServer(void);
 void UnregisterServer(void);
 
 void MasterClient_Ticker(void);
 
-msg_server_t *GetShortServersList(INT32 room, int id);
-INT32 GetRoomsList(boolean hosting, int id);
+const msg_server_t *GetShortServersList(INT32 room);
+INT32 GetRoomsList(boolean hosting);
 #ifdef UPDATE_ALERT
-char *GetMODVersion(int id);
+const char *GetMODVersion(void);
 void GetMODVersion_Console(void);
 #endif
 extern msg_rooms_t room_list[NUM_LIST_ROOMS+1];
 
 void AddMServCommands(void);
-
-/* HTTP */
-void HMS_set_api (char *api);
-int  HMS_fetch_rooms (int joining, int id);
-int  HMS_register (void);
-int  HMS_unlist (void);
-int  HMS_update (void);
-void HMS_list_servers (void);
-msg_server_t * HMS_fetch_servers (msg_server_t *list, int room, int id);
-int  HMS_compare_mod_version (char *buffer, size_t size_of_buffer);
 
 #endif

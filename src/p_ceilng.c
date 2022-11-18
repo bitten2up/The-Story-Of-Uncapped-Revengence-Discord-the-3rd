@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
+// Copyright (C) 1999-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -13,7 +13,6 @@
 
 #include "doomdef.h"
 #include "p_local.h"
-#include "r_fps.h"
 #include "r_main.h"
 #include "s_sound.h"
 #include "z_zone.h"
@@ -48,7 +47,8 @@ void T_MoveCeiling(ceiling_t *ceiling)
 		case 0: // IN STASIS
 			break;
 		case 1: // UP
-			res = T_MovePlane(ceiling->sector, ceiling->speed, ceiling->topheight, false, true, ceiling->direction);
+			res = T_MovePlane(ceiling->sector, ceiling->speed, ceiling->topheight, false,
+				1, ceiling->direction);
 
 			if (ceiling->type == bounceCeiling)
 			{
@@ -68,8 +68,7 @@ void T_MoveCeiling(ceiling_t *ceiling)
 				switch (ceiling->type)
 				{
 					case instantMoveCeilingByFrontSector:
-						if (ceiling->texture > -1)
-							ceiling->sector->ceilingpic = ceiling->texture;
+						ceiling->sector->ceilingpic = ceiling->texture;
 						ceiling->sector->ceilingdata = NULL;
 						ceiling->sector->ceilspeed = 0;
 						P_RemoveThinker(&ceiling->thinker);
@@ -160,7 +159,8 @@ void T_MoveCeiling(ceiling_t *ceiling)
 			break;
 
 		case -1: // DOWN
-			res = T_MovePlane(ceiling->sector, ceiling->speed, ceiling->bottomheight, ceiling->crush, true, ceiling->direction);
+			res = T_MovePlane(ceiling->sector, ceiling->speed, ceiling->bottomheight,
+				ceiling->crush, 1, ceiling->direction);
 
 			if (ceiling->type == bounceCeiling)
 			{
@@ -188,8 +188,7 @@ void T_MoveCeiling(ceiling_t *ceiling)
 						break;
 
 					case instantMoveCeilingByFrontSector:
-						if (ceiling->texture > -1)
-							ceiling->sector->ceilingpic = ceiling->texture;
+						ceiling->sector->ceilingpic = ceiling->texture;
 						ceiling->sector->ceilingdata = NULL;
 						ceiling->sector->ceilspeed = 0;
 						P_RemoveThinker(&ceiling->thinker);
@@ -315,10 +314,11 @@ void T_CrushCeiling(ceiling_t *ceiling)
 			if (ceiling->type == crushBothOnce)
 			{
 				// Move the floor
-				T_MovePlane(ceiling->sector, ceiling->speed, ceiling->bottomheight-(ceiling->topheight-ceiling->bottomheight), false, false, -ceiling->direction);
+				T_MovePlane(ceiling->sector, ceiling->speed, ceiling->bottomheight-(ceiling->topheight-ceiling->bottomheight), false, 0, -ceiling->direction);
 			}
 
-			res = T_MovePlane(ceiling->sector, ceiling->speed, ceiling->topheight, false, true, ceiling->direction);
+			res = T_MovePlane(ceiling->sector, ceiling->speed, ceiling->topheight,
+				false, 1, ceiling->direction);
 
 			if (res == pastdest)
 			{
@@ -357,10 +357,11 @@ void T_CrushCeiling(ceiling_t *ceiling)
 			if (ceiling->type == crushBothOnce)
 			{
 				// Move the floor
-				T_MovePlane(ceiling->sector, ceiling->speed, ceiling->bottomheight, ceiling->crush, false, -ceiling->direction);
+				T_MovePlane(ceiling->sector, ceiling->speed, ceiling->bottomheight, ceiling->crush, 0, -ceiling->direction);
 			}
 
-			res = T_MovePlane(ceiling->sector, ceiling->speed, ceiling->bottomheight, ceiling->crush, true, ceiling->direction);
+			res = T_MovePlane(ceiling->sector, ceiling->speed, ceiling->bottomheight,
+				ceiling->crush, 1, ceiling->direction);
 
 			if (res == pastdest)
 			{
@@ -397,9 +398,8 @@ INT32 EV_DoCeiling(line_t *line, ceiling_e type)
 	INT32 secnum = -1;
 	sector_t *sec;
 	ceiling_t *ceiling;
-	mtag_t tag = Tag_FGet(&line->tags);
 
-	TAG_ITER_SECTORS(tag, secnum)
+	while ((secnum = P_FindSectorFromLineTag(line,secnum)) >= 0)
 	{
 		sec = &sectors[secnum];
 
@@ -409,7 +409,7 @@ INT32 EV_DoCeiling(line_t *line, ceiling_e type)
 		// new door thinker
 		rtn = 1;
 		ceiling = Z_Calloc(sizeof (*ceiling), PU_LEVSPEC, NULL);
-		P_AddThinker(THINK_MAIN, &ceiling->thinker);
+		P_AddThinker(&ceiling->thinker);
 		sec->ceilingdata = ceiling;
 		ceiling->thinker.function.acp1 = (actionf_p1)T_MoveCeiling;
 		ceiling->sector = sec;
@@ -515,10 +515,7 @@ INT32 EV_DoCeiling(line_t *line, ceiling_e type)
 					ceiling->direction = -1;
 					ceiling->bottomheight = line->frontsector->ceilingheight;
 				}
-				if (line->flags & ML_NOCLIMB)
-					ceiling->texture = -1;
-				else
-					ceiling->texture = line->frontsector->ceilingpic;
+				ceiling->texture = line->frontsector->ceilingpic;
 				break;
 
 			case moveCeilingByFrontTexture:
@@ -600,12 +597,9 @@ INT32 EV_DoCeiling(line_t *line, ceiling_e type)
 
 		}
 
-		ceiling->tag = tag;
+		ceiling->tag = sec->tag;
 		ceiling->type = type;
 		firstone = 0;
-
-		// interpolation
-		R_CreateInterpolator_SectorPlane(&ceiling->thinker, sec, true);
 	}
 	return rtn;
 }
@@ -624,9 +618,8 @@ INT32 EV_DoCrush(line_t *line, ceiling_e type)
 	INT32 secnum = -1;
 	sector_t *sec;
 	ceiling_t *ceiling;
-	mtag_t tag = Tag_FGet(&line->tags);
 
-	TAG_ITER_SECTORS(tag, secnum)
+	while ((secnum = P_FindSectorFromLineTag(line,secnum)) >= 0)
 	{
 		sec = &sectors[secnum];
 
@@ -636,7 +629,7 @@ INT32 EV_DoCrush(line_t *line, ceiling_e type)
 		// new door thinker
 		rtn = 1;
 		ceiling = Z_Calloc(sizeof (*ceiling), PU_LEVSPEC, NULL);
-		P_AddThinker(THINK_MAIN, &ceiling->thinker);
+		P_AddThinker(&ceiling->thinker);
 		sec->ceilingdata = ceiling;
 		ceiling->thinker.function.acp1 = (actionf_p1)T_CrushCeiling;
 		ceiling->sector = sec;
@@ -681,12 +674,8 @@ INT32 EV_DoCrush(line_t *line, ceiling_e type)
 				break;
 		}
 
-		ceiling->tag = tag;
+		ceiling->tag = sec->tag;
 		ceiling->type = type;
-
-		// interpolation
-		R_CreateInterpolator_SectorPlane(&ceiling->thinker, sec, false);
-		R_CreateInterpolator_SectorPlane(&ceiling->thinker, sec, true);
 	}
 	return rtn;
 }

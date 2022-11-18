@@ -1,10 +1,6 @@
 # Declare SDL2 interface sources
 
-if(NOT ${SRB2_CONFIG_HAVE_MIXERX})
-	set(SRB2_CONFIG_SDL2_USEMIXER ON CACHE BOOL "Use SDL2_mixer or regular sdl sound")
-else()
-	set(SRB2_CONFIG_SDL2_USEMIXER OFF)
-endif()
+set(SRB2_CONFIG_SDL2_USEMIXER ON CACHE BOOL "Use SDL2_mixer or regular sdl sound")
 
 if(${SRB2_CONFIG_SDL2_USEMIXER})
 	if(${SRB2_CONFIG_USE_INTERNAL_LIBRARIES})
@@ -21,24 +17,40 @@ if(${SRB2_CONFIG_SDL2_USEMIXER})
 	endif()
 	if(${SDL2_MIXER_FOUND})
 		set(SRB2_HAVE_MIXER ON)
-		target_sources(SRB2SDL2 PRIVATE mixer_sound.c)
+		set(SRB2_SDL2_SOUNDIMPL mixer_sound.c)
 	else()
 		message(WARNING "You specified that SDL2_mixer is available, but it was not found. Falling back to sdl sound.")
-		target_sources(SRB2SDL2 PRIVATE sdl_sound.c)
+		set(SRB2_SDL2_SOUNDIMPL sdl_sound.c)
 	endif()
-elseif(${MIXERX_FOUND})
-	target_sources(SRB2SDL2 PRIVATE mixer_sound.c)
 else()
-	target_sources(SRB2SDL2 PRIVATE sdl_sound.c)
+	set(SRB2_SDL2_SOUNDIMPL sdl_sound.c)
 endif()
 
-target_sourcefile(c)
+set(SRB2_SDL2_SOURCES
+	dosstr.c
+	endtxt.c
+	hwsym_sdl.c
+	i_cdmus.c
+	i_main.c
+	i_net.c
+	i_system.c
+	i_ttf.c
+	i_video.c
+	#IMG_xpm.c
+	ogl_sdl.c
 
-target_sources(SRB2SDL2 PRIVATE ogl_sdl.c)
+	${SRB2_SDL2_SOUNDIMPL}
+)
 
-if(${SRB2_CONFIG_HAVE_THREADS})
-	target_sources(SRB2SDL2 PRIVATE i_threads.c)
-endif()
+set(SRB2_SDL2_HEADERS
+	endtxt.h
+	hwsym_sdl.h
+	i_ttf.h
+	ogl_sdl.h
+	sdlmain.h
+)
+
+source_group("Interface Code" FILES ${SRB2_SDL2_SOURCES} ${SRB2_SDL2_HEADERS})
 
 # Dependency
 if(${SRB2_CONFIG_USE_INTERNAL_LIBRARIES})
@@ -55,36 +67,80 @@ else()
 endif()
 
 if(${SDL2_FOUND})
+	set(SRB2_SDL2_TOTAL_SOURCES
+		${SRB2_CORE_SOURCES}
+		${SRB2_CORE_HEADERS}
+		${SRB2_PNG_SOURCES}
+		${SRB2_PNG_HEADERS}
+		${SRB2_CORE_RENDER_SOURCES}
+		${SRB2_CORE_GAME_SOURCES}
+		${SRB2_LUA_SOURCES}
+		${SRB2_LUA_HEADERS}
+		${SRB2_BLUA_SOURCES}
+		${SRB2_BLUA_HEADERS}
+		${SRB2_SDL2_SOURCES}
+		${SRB2_SDL2_HEADERS}
+	)
+
+	source_group("Main" FILES ${SRB2_CORE_SOURCES} ${SRB2_CORE_HEADERS}
+		${SRB2_PNG_SOURCES} ${SRB2_PNG_HEADERS})
+	source_group("Renderer" FILES ${SRB2_CORE_RENDER_SOURCES})
+	source_group("Game" FILES ${SRB2_CORE_GAME_SOURCES})
+	source_group("Assembly" FILES ${SRB2_ASM_SOURCES} ${SRB2_NASM_SOURCES})
+	source_group("LUA" FILES ${SRB2_LUA_SOURCES} ${SRB2_LUA_HEADERS})
+	source_group("LUA\\Interpreter" FILES ${SRB2_BLUA_SOURCES} ${SRB2_BLUA_HEADERS})
+
+	if(${SRB2_CONFIG_HWRENDER})
+		set(SRB2_SDL2_TOTAL_SOURCES ${SRB2_SDL2_TOTAL_SOURCES}
+			${SRB2_HWRENDER_SOURCES}
+			${SRB2_HWRENDER_HEADERS}
+			${SRB2_R_OPENGL_SOURCES}
+			${SRB2_R_OPENGL_HEADERS}
+		)
+
+		source_group("Hardware" FILES ${SRB2_HWRENDER_SOURCES} ${SRB2_HWRENDER_HEADERS})
+		source_group("Hardware\\OpenGL Renderer" FILES ${SRB2_R_OPENGL_SOURCES} ${SRB2_R_OPENGL_HEADERS})
+	endif()
+
 	if(${SRB2_USEASM})
-		set_source_files_properties(${SRB2_ASM_SOURCES} PROPERTIES LANGUAGE C)
-		set_source_files_properties(${SRB2_ASM_SOURCES} PROPERTIES COMPILE_FLAGS "-x assembler-with-cpp")
+		set(SRB2_SDL2_TOTAL_SOURCES ${SRB2_SDL2_TOTAL_SOURCES}
+			${SRB2_NASM_SOURCES}
+		)
+		if(MSVC)
+			set(SRB2_SDL2_TOTAL_SOURCES ${SRB2_SDL2_TOTAL_SOURCES}
+				${SRB2_NASM_OBJECTS}
+			)
+			set_source_files_properties(${SRB2_NASM_OBJECTS} PROPERTIES GENERATED ON)
+		else()
+			list(APPEND SRB2_SDL2_TOTAL_SOURCES ${SRB2_ASM_SOURCES})
+			set_source_files_properties(${SRB2_ASM_SOURCES} PROPERTIES LANGUAGE C)
+			set_source_files_properties(${SRB2_ASM_SOURCES} PROPERTIES COMPILE_FLAGS "-x assembler-with-cpp")
+		endif()
 	endif()
 
 	if(${CMAKE_SYSTEM} MATCHES Windows)
-		target_sources(SRB2SDL2 PRIVATE
-			../win32/win_dbg.c
-			../win32/Srb2win.rc)
+		set(SRB2_SDL2_TOTAL_SOURCES ${SRB2_SDL2_TOTAL_SOURCES}
+			${CMAKE_SOURCE_DIR}/src/win32/win_dbg.c
+			${CMAKE_SOURCE_DIR}/src/win32/Srb2win.rc
+		)
 	endif()
 
 	if(${CMAKE_SYSTEM} MATCHES Darwin)
 		set(MACOSX_BUNDLE_ICON_FILE Srb2mac.icns)
 		set_source_files_properties(macosx/Srb2mac.icns PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
-		target_sources(SRB2SDL2 PRIVATE
+		set(SRB2_SDL2_MAC_SOURCES
 			macosx/mac_alert.c
 			macosx/mac_alert.h
 			macosx/mac_resources.c
 			macosx/mac_resources.h
 			macosx/Srb2mac.icns
 		)
+		source_group("Interface Code\\OSX Compatibility" FILES ${SRB2_SDL2_MAC_SOURCES})
+		set(SRB2_SDL2_TOTAL_SOURCES ${SRB2_SDL2_TOTAL_SOURCES} ${SRB2_SDL2_MAC_SOURCES})
 	endif()
 
-	if(${CMAKE_SYSTEM} MATCHES Windows)
-		set_target_properties(SRB2SDL2 PROPERTIES OUTPUT_NAME srb2win)
-	elseif(${CMAKE_SYSTEM} MATCHES Linux)
-		set_target_properties(SRB2SDL2 PROPERTIES OUTPUT_NAME lsdlsrb2)
-	else()
-		set_target_properties(SRB2SDL2 PROPERTIES OUTPUT_NAME srb2)
-	endif()
+	add_executable(SRB2SDL2 MACOSX_BUNDLE WIN32 ${SRB2_SDL2_TOTAL_SOURCES})
+	set_target_properties(SRB2SDL2 PROPERTIES OUTPUT_NAME ${SRB2_SDL2_EXE_NAME})
 
 	if(${CMAKE_SYSTEM} MATCHES Darwin)
 		find_library(CORE_LIB CoreFoundation)
@@ -93,14 +149,9 @@ if(${SDL2_FOUND})
 			SDL2
 			SDL2_mixer
 			${GME_LIBRARIES}
-			${OPENMPT_LIBRARIES}
-			${MIXERX_LIBRARIES}
 			${PNG_LIBRARIES}
 			${ZLIB_LIBRARIES}
 			${OPENGL_LIBRARIES}
-			${CURL_LIBRARIES}
-			${DISCORDRPC_LIBRARIES}
-			${DISCORDGAMESDK_LIBRARIES}
 		)
 		set_target_properties(SRB2SDL2 PROPERTIES OUTPUT_NAME "${CPACK_PACKAGE_DESCRIPTION_SUMMARY}")
 	else()
@@ -108,14 +159,9 @@ if(${SDL2_FOUND})
 			${SDL2_LIBRARIES}
 			${SDL2_MIXER_LIBRARIES}
 			${GME_LIBRARIES}
-			${OPENMPT_LIBRARIES}
-			${MIXERX_LIBRARIES}
 			${PNG_LIBRARIES}
 			${ZLIB_LIBRARIES}
 			${OPENGL_LIBRARIES}
-			${CURL_LIBRARIES}
-			${DISCORDRPC_LIBRARIES}
-			${DISCORDGAMESDK_LIBRARIES}
 		)
 
 		if(${CMAKE_SYSTEM} MATCHES Linux)
@@ -138,6 +184,18 @@ if(${SDL2_FOUND})
 			set(ASM_ASSEMBLER_OBJFORMAT ${CMAKE_ASM_NASM_OBJECT_FORMAT})
 			set_source_files_properties(${SRB2_NASM_SOURCES} LANGUAGE ASM_NASM)
 		endif()
+
+		if(MSVC)
+			# using assembler with msvc doesn't work, must do it manually
+			foreach(ASMFILE ${SRB2_NASM_SOURCES})
+				get_filename_component(ASMFILE_NAME ${ASMFILE} NAME_WE)
+				set(ASMFILE_NAME ${ASMFILE_NAME}.obj)
+				add_custom_command(TARGET SRB2SDL2 PRE_LINK
+					COMMAND ${ASM_ASSEMBLER_TEMP} ARGS -f ${ASM_ASSEMBLER_OBJFORMAT} -o ${CMAKE_CURRENT_BINARY_DIR}/${ASMFILE_NAME} ${ASMFILE}
+					COMMENT "assemble ${ASMFILE_NAME}."
+				)
+			endforeach()
+		endif()
 	endif()
 
 	set_target_properties(SRB2SDL2 PROPERTIES VERSION ${SRB2_VERSION})
@@ -151,40 +209,56 @@ if(${SDL2_FOUND})
 		)
 	endif()
 
+	if(MSVC)
+		if(${SRB2_CONFIG_USE_INTERNAL_LIBRARIES})
+			set(SDL2_MAIN_FOUND ON)
+			if(${SRB2_SYSTEM_BITS} EQUAL 64)
+				set(SDL2_MAIN_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/libs/SDL2/x86_64-w64-mingw32/include/SDL2)
+				set(SDL2_MAIN_LIBRARIES "-L${CMAKE_SOURCE_DIR}/libs/SDL2/x86_64-w64-mingw32/lib -lSDL2main")
+			else() # 32-bit
+				set(SDL2_MAIN_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/libs/SDL2/i686-w64-mingw32/include/SDL2)
+				set(SDL2_MAIN_LIBRARIES "-L${CMAKE_SOURCE_DIR}/libs/SDL2/i686-w64-mingw32/lib -lSDL2main")
+			endif()
+		else()
+			find_package(SDL2_MAIN REQUIRED)
+		endif()
+		target_link_libraries(SRB2SDL2 PRIVATE
+			${SDL2_MAIN_LIBRARIES}
+		)
+		target_compile_options(SRB2SDL2 PRIVATE
+			/Umain
+			/D_CRT_SECURE_NO_WARNINGS # something about string functions.
+			/D_CRT_NONSTDC_NO_DEPRECATE
+			/DSDLMAIN
+			/D_WINSOCK_DEPRECATED_NO_WARNINGS # Don't care
+		)
+	endif()
+
 	target_include_directories(SRB2SDL2 PRIVATE
 		${SDL2_INCLUDE_DIRS}
 		${SDL2_MIXER_INCLUDE_DIRS}
 		${GME_INCLUDE_DIRS}
-		${OPENMPT_INCLUDE_DIRS}
-		${MIXERX_INCLUDE_DIRS}
 		${PNG_INCLUDE_DIRS}
 		${ZLIB_INCLUDE_DIRS}
 		${OPENGL_INCLUDE_DIRS}
-		${CURL_INCLUDE_DIRS}
-		${DISCORDRPC_INCLUDE_DIRS}
-		${DISCORDGAMESDK_INCLUDE_DIRS}
 	)
 
-	if((${SRB2_HAVE_MIXER}) OR (${SRB2_HAVE_MIXERX}))
+	if(${SRB2_HAVE_MIXER})
 		target_compile_definitions(SRB2SDL2 PRIVATE -DHAVE_MIXER -DSOUND=SOUND_MIXER)
 	endif()
 
 	target_compile_definitions(SRB2SDL2 PRIVATE
-		-DDIRECTFULLSCREEN -DHAVE_SDL
+		-DHAVE_SDL
 	)
 
-	## strip debug symbols into separate file when using gcc.
-	## to be consistent with Makefile, don't generate for OS X.
-	if((CMAKE_COMPILER_IS_GNUCC) AND NOT (${CMAKE_SYSTEM} MATCHES Darwin))
-		if((${CMAKE_BUILD_TYPE} MATCHES Debug) OR (${CMAKE_BUILD_TYPE} MATCHES RelWithDebInfo))
-			if(${CMAKE_BUILD_TYPE} MATCHES Debug)
-				set(OBJCOPY_ONLY_KEEP_DEBUG "--only-keep-debug")
-			endif()
+	## strip debug symbols into separate file when using gcc
+	if(CMAKE_COMPILER_IS_GNUCC)
+		if(${CMAKE_BUILD_TYPE} MATCHES Debug)
 			message(STATUS "Will make separate debug symbols in *.debug")
 			add_custom_command(TARGET SRB2SDL2 POST_BUILD
-				COMMAND ${OBJCOPY} ${OBJCOPY_ONLY_KEEP_DEBUG} $<TARGET_FILE:SRB2SDL2> $<TARGET_FILE:SRB2SDL2>.debug
+				COMMAND ${OBJCOPY} --only-keep-debug $<TARGET_FILE:SRB2SDL2> $<TARGET_FILE:SRB2SDL2>.debug
 				COMMAND ${OBJCOPY} --strip-debug $<TARGET_FILE:SRB2SDL2>
-				COMMAND ${OBJCOPY} --add-gnu-debuglink=$<TARGET_FILE:SRB2SDL2>.debug $<TARGET_FILE:SRB2SDL2>
+				COMMAND ${OBJCOPY} --add-gnu-debuglink=$<TARGET_FILE_NAME:SRB2SDL2>.debug $<TARGET_FILE:SRB2SDL2>
 			)
 		endif()
 	endif()
@@ -198,15 +272,6 @@ if(${SDL2_FOUND})
 		install(TARGETS SRB2SDL2 SRB2SDL2
 			RUNTIME DESTINATION .
 		)
-		if ((${CMAKE_BUILD_TYPE} MATCHES Debug) OR (${CMAKE_BUILD_TYPE} MATCHES RelWithDebInfo))
-			set(SRB2_DEBUG_INSTALL OFF CACHE BOOL "Insert *.debug file into the install directory or package.")
-			if (${SRB2_DEBUG_INSTALL})
-				install(FILES $<TARGET_FILE:SRB2SDL2>.debug
-					DESTINATION .
-					OPTIONAL
-				)
-			endif()
-		endif()
 	endif()
 
 	if(${CMAKE_SYSTEM} MATCHES Windows)
@@ -219,16 +284,12 @@ if(${SDL2_FOUND})
 							HINTS ${CMAKE_SOURCE_DIR}/libs/dll-binaries/x86_64
 							HINTS ${CMAKE_SOURCE_DIR}/libs/SDL2/x86_64-w64-mingw32/bin
 							HINTS ${CMAKE_SOURCE_DIR}/libs/SDL2_mixer/x86_64-w64-mingw32/bin
-							HINTS ${CMAKE_SOURCE_DIR}/libs/libopenmpt/bin/x86_64/mingw
-							HINTS ${CMAKE_SOURCE_DIR}/libs/SDLMixerX/x86_64-w64-mingw32/bin
 						)
 					else()
 						find_library(SRB2_SDL2_DLL_${dllname} "${defaultname}"
 							HINTS ${CMAKE_SOURCE_DIR}/libs/dll-binaries/i686
 							HINTS ${CMAKE_SOURCE_DIR}/libs/SDL2/i686-w64-mingw32/bin
 							HINTS ${CMAKE_SOURCE_DIR}/libs/SDL2_mixer/i686-w64-mingw32/bin
-							HINTS ${CMAKE_SOURCE_DIR}/libs/libopenmpt/bin/x86/mingw
-							HINTS ${CMAKE_SOURCE_DIR}/libs/SDLMixerX/i686-w64-mingw32/bin
 						)
 					endif()
 				else()
@@ -237,16 +298,12 @@ if(${SDL2_FOUND})
 							HINTS ${CMAKE_SOURCE_DIR}/libs/dll-binaries/x86_64
 							HINTS ${CMAKE_SOURCE_DIR}/libs/SDL2/lib/x64
 							HINTS ${CMAKE_SOURCE_DIR}/libs/SDL2_mixer/lib/x64
-							HINTS ${CMAKE_SOURCE_DIR}/libs/libopenmpt/bin/x86_64/mingw
-							HINTS ${CMAKE_SOURCE_DIR}/libs/SDLMixerX/x86_64-w64-mingw32/bin
 						)
 					else()
 						find_library(SRB2_SDL2_DLL_${dllname} "${defaultname}"
 							HINTS ${CMAKE_SOURCE_DIR}/libs/dll-binaries/i686
 							HINTS ${CMAKE_SOURCE_DIR}/libs/SDL2/lib/x86
 							HINTS ${CMAKE_SOURCE_DIR}/libs/SDL2_mixer/lib/x86
-							HINTS ${CMAKE_SOURCE_DIR}/libs/libopenmpt/bin/x86/mingw
-							HINTS ${CMAKE_SOURCE_DIR}/libs/SDLMixerX/i686-w64-mingw32/bin
 						)
 					endif()
 				endif()
@@ -266,21 +323,6 @@ if(${SDL2_FOUND})
 		endif()
 		if(${SRB2_CONFIG_HAVE_GME})
 			getwinlib(libgme "libgme.dll")
-		endif()
-		if(${SRB2_CONFIG_HAVE_OPENMPT})
-			getwinlib(libopenmpt "libopenmpt.dll")
-		endif()
-		if(${SRB2_CONFIG_HAVE_MIXERX})
-			getwinlib(SDL2_mixer_ext "SDL2_mixer_ext.dll")
-			getwinlib(libfluidsynth-2 "libfluidsynth-2.dll")
-			getwinlib(libgcc_s_sjlj-1 "libgcc_s_sjlj-1.dll")
-			getwinlib(libstdc++-6 "libstdc++-6.dll")
-		endif()
-		if(${SRB2_CONFIG_HAVE_DISCORDRPC})
-			getwinlib(discord-rpc "discord-rpc.dll")
-		endif()
-		if(${SRB2_CONFIG_HAVE_DISCORDGAMESDK})
-			getwinlib(discord_game_sdk "discord_game_sdk.dll")
 		endif()
 
 		install(PROGRAMS

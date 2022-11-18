@@ -1,12 +1,19 @@
-// SONIC ROBO BLAST 2
+// Emacs style mode select   -*- C++ -*-
 //-----------------------------------------------------------------------------
-// Copyright (C) 2005 by Sonic Team Junior.
 //
-// This program is free software distributed under the
-// terms of the GNU General Public License, version 2.
-// See the 'LICENSE' file for more details.
+// Copyright (C) 2005 by SRB2 Jr. Team.
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; either version 2
+// of the License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
 //-----------------------------------------------------------------------------
-/// \file hw_dll.h
+/// \file
 /// \brief Win32 DLL and Shared Objects API definitions
 
 #ifndef __HWR_DLL_H__
@@ -33,28 +40,33 @@
    #define EXPORT
   #endif
  #endif
- #ifdef _WIN32
+ #if defined (_WIN32) && !defined (_XBOX)
   #define HWRAPI(fn)  WINAPI fn
  #else
   #define HWRAPI(fn)  fn
  #endif
 #else // _CREATE_DLL_
  #define EXPORT      typedef
- #ifdef _WIN32
+ #if defined (_WIN32) && !defined (_XBOX)
   #define HWRAPI(fn)  (WINAPI *fn)
  #else
   #define HWRAPI(fn)  (*fn)
  #endif
 #endif
 
+typedef void (*I_Error_t) (const char *error, ...) FUNCIERROR;
+
 // ==========================================================================
 //                                                                      MATHS
 // ==========================================================================
 
 // Constants
+#ifndef M_PIl
+#define M_PIl 3.1415926535897932384626433832795029L
+#endif
 #define DEGREE (0.017453292519943295769236907684883l) // 2*PI/360
 
-void GL_DBG_Printf(const char *format, ...) /*FUNCPRINTF*/;
+void DBG_Printf(const char *lpFmt, ...) /*FUNCPRINTF*/;
 
 #ifdef _WINDOWS
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved);

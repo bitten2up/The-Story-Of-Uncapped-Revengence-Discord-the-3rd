@@ -1,7 +1,7 @@
 // SONIC ROBO BLAST 2
 //-----------------------------------------------------------------------------
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
+// Copyright (C) 1999-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -18,181 +18,250 @@
 #ifdef __GNUC__
 #include <unistd.h>
 #endif
+#ifdef __OS2__
+#include <sys/types.h>
+#include <sys/time.h>
+#endif // __OS2__
 
-#ifndef NO_IPV6
-	#define HAVE_IPV6
+#ifdef _PS3
+#define NO_IPV6 // PSL1GHT v2 do not have IPv6 support
 #endif
 
-#ifdef _WIN32
-	#define USE_WINSOCK
-	#if defined (_WIN64) || defined (HAVE_IPV6)
-		#define USE_WINSOCK2
-	#else //_WIN64/HAVE_IPV6
-		#define USE_WINSOCK1
-	#endif
+#ifndef NO_IPV6
+#define HAVE_IPV6
+#endif
+
+#if defined (_WIN32) || defined (_WIN32_WCE)
+#define USE_WINSOCK
+#if defined (_WIN64) || defined (HAVE_IPV6)
+#define USE_WINSOCK2
+#else //_WIN64/HAVE_IPV6
+#define USE_WINSOCK1
+#endif
 #endif //WIN32 OS
 
+#ifdef _XBOX // XBox have on WinSock API?
+#undef USE_WINSOCK
+#undef USE_WINSOCK1
+#undef USE_WINSOCK2
+#endif
+
 #ifdef USE_WINSOCK2
-	#include <ws2tcpip.h>
+#include <ws2tcpip.h>
 #endif
 
 #include "doomdef.h"
 
 #if defined (NOMD5) && !defined (NONET)
-	//#define NONET
+//#define NONET
 #endif
 
 #ifdef NONET
-	#undef HAVE_MINIUPNPC
+#undef HAVE_MINIUPNPC
 #else
-	#ifdef USE_WINSOCK1
-		#include <winsock.h>
-	#else
-		#ifndef USE_WINSOCK
-			#include <arpa/inet.h>
-			#ifdef __APPLE_CC__
-				#ifndef _BSD_SOCKLEN_T_
-					#define _BSD_SOCKLEN_T_
-				#endif //_BSD_SOCKLEN_T_
-			#endif //__APPLE_CC__
-			#include <sys/socket.h>
-			#include <netinet/in.h>
-			#include <netdb.h>
-			#include <sys/ioctl.h>
-		#endif //normal BSD API
+#ifdef USE_WINSOCK1
+#include <winsock.h>
+#elif !defined (SCOUW2) && !defined (SCOUW7) && !defined (__OS2__)
+#ifdef HAVE_LWIP
+#include <lwip/inet.h>
+#elif !defined (USE_WINSOCK)
+#include <arpa/inet.h>
+#endif //normal BSD API
 
-		#include <errno.h>
-		#include <time.h>
+#ifdef HAVE_LWIP
+#include <lwip/sockets.h>
+#define ioctl lwip_ioctl
+#elif !defined (USE_WINSOCK) //!HAVE_LWIP
+#ifdef __APPLE_CC__
+#ifndef _BSD_SOCKLEN_T_
+#define _BSD_SOCKLEN_T_
+#endif //_BSD_SOCKLEN_T_
+#endif //__APPLE_CC__
+#include <sys/socket.h>
+#include <netinet/in.h>
+#endif //normal BSD API
 
-		#if defined (__unix__) || defined (__APPLE__) || defined (UNIXCOMMON)
-			#include <sys/time.h>
-		#endif // UNIXCOMMON
+#if defined(_arch_dreamcast) && !defined(HAVE_LWIP)
+#include <kos/net.h>
+#elif defined(HAVE_LWIP)
+#include <lwip/lwip.h>
+#elif defined (_PS3)
+#include <net/select.h>
+#include <net/net.h>
+#elif !defined(USE_WINSOCK) //!HAVE_LWIP
+#include <netdb.h>
+#include <sys/ioctl.h>
+#endif //normal BSD API
+
+#include <errno.h>
+#include <time.h>
+
+#ifdef _arch_dreamcast
+#include "sdl12/SRB2DC/dchelp.h"
+#endif
+
+#if (defined (__unix__) && !defined (MSDOS)) || defined(__APPLE__) || defined (UNIXCOMMON)
+	#include <sys/time.h>
+#endif // UNIXCOMMON
+#endif // !NONET
+
+#ifdef USE_WINSOCK
+	// some undefined under win32
+	#undef errno
+	//#define errno WSAGetLastError() //Alam_GBC: this is the correct way, right?
+	#define errno h_errno // some very strange things happen when not using h_error?!?
+	#ifdef EWOULDBLOCK
+	#undef EWOULDBLOCK
 	#endif
-
-	#ifdef USE_WINSOCK
-		// some undefined under win32
-		#undef errno
-		//#define errno WSAGetLastError() //Alam_GBC: this is the correct way, right?
-		#define errno h_errno // some very strange things happen when not using h_error?!?
-		#ifdef EWOULDBLOCK
-		#undef EWOULDBLOCK
-		#endif
-		#define EWOULDBLOCK WSAEWOULDBLOCK
-		#ifdef EMSGSIZE
-		#undef EMSGSIZE
-		#endif
-		#define EMSGSIZE WSAEMSGSIZE
-		#ifdef ECONNREFUSED
-		#undef ECONNREFUSED
-		#endif
-		#define ECONNREFUSED WSAECONNREFUSED
-		#ifdef ETIMEDOUT
-		#undef ETIMEDOUT
-		#endif
-		#define ETIMEDOUT WSAETIMEDOUT
-		#ifndef IOC_VENDOR
-		#define IOC_VENDOR 0x18000000
-		#endif
-		#ifndef _WSAIOW
-		#define _WSAIOW(x,y) (IOC_IN|(x)|(y))
-		#endif
-		#ifndef SIO_UDP_CONNRESET
-		#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR,12)
-		#endif
-		#ifndef AI_ADDRCONFIG
-		#define AI_ADDRCONFIG 0x00000400
-		#endif
-		#ifndef STATUS_INVALID_PARAMETER
-		#define STATUS_INVALID_PARAMETER 0xC000000D
-		#endif
-	#endif // USE_WINSOCK
-
-	typedef union
-	{
-		struct sockaddr     any;
-		struct sockaddr_in  ip4;
-	#ifdef HAVE_IPV6
-		struct sockaddr_in6 ip6;
+	#define EWOULDBLOCK WSAEWOULDBLOCK
+	#ifdef EMSGSIZE
+	#undef EMSGSIZE
 	#endif
-	} mysockaddr_t;
+	#define EMSGSIZE WSAEMSGSIZE
+	#ifdef ECONNREFUSED
+	#undef ECONNREFUSED
+	#endif
+	#define ECONNREFUSED WSAECONNREFUSED
+	#ifdef ETIMEDOUT
+	#undef ETIMEDOUT
+	#endif
+	#define ETIMEDOUT WSAETIMEDOUT
+	#ifndef IOC_VENDOR
+	#define IOC_VENDOR 0x18000000
+	#endif
+	#ifndef _WSAIOW
+	#define _WSAIOW(x,y) (IOC_IN|(x)|(y))
+	#endif
+	#ifndef SIO_UDP_CONNRESET
+	#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR,12)
+	#endif
+	#ifndef AI_ADDRCONFIG
+	#define AI_ADDRCONFIG 0x00000400
+	#endif
+	#ifndef STATUS_INVALID_PARAMETER
+	#define STATUS_INVALID_PARAMETER 0xC000000D
+	#endif
+#endif
 
-	#ifdef HAVE_MINIUPNPC
-		#ifdef STATIC_MINIUPNPC
-			#define STATICLIB
-		#endif
-		#include "miniupnpc/miniwget.h"
-		#include "miniupnpc/miniupnpc.h"
-		#include "miniupnpc/upnpcommands.h"
-		#undef STATICLIB
-		static UINT8 UPNP_support = TRUE;
-	#endif // HAVE_MINIUPNC
+#ifdef __DJGPP__
+#ifdef WATTCP // Alam_GBC: Wattcp may need this
+#include <tcp.h>
+#define strerror strerror_s
+#else // wattcp
+#include <lsck/lsck.h>
+#endif // libsocket
+#endif // djgpp
+
+typedef union
+{
+	struct sockaddr     any;
+	struct sockaddr_in  ip4;
+#ifdef HAVE_IPV6
+	struct sockaddr_in6 ip6;
+#endif
+} mysockaddr_t;
+
+#ifdef HAVE_MINIUPNPC
+#ifdef STATIC_MINIUPNPC
+#define STATICLIB
+#endif
+#include "miniupnpc/miniwget.h"
+#include "miniupnpc/miniupnpc.h"
+#include "miniupnpc/upnpcommands.h"
+#undef STATICLIB
+static UINT8 UPNP_support = TRUE;
+#endif
 
 #endif // !NONET
 
 #define MAXBANS 100
 
 #include "i_system.h"
-#include "i_time.h"
 #include "i_net.h"
 #include "d_net.h"
 #include "d_netfil.h"
 #include "i_tcp.h"
 #include "m_argv.h"
-#include "stun.h"
-#include "z_zone.h"
 
 #include "doomstat.h"
 
-// win32
-#ifdef USE_WINSOCK
+// win32 or djgpp
+#if defined (USE_WINSOCK) || defined (__DJGPP__)
 	// winsock stuff (in winsock a socket is not a file)
 	#define ioctl ioctlsocket
 	#define close closesocket
+
+	#ifdef _WIN32_WCE
+	#include "sdl12/SRB2CE/cehelp.h"
+	#endif
+
 #endif
 
 #include "i_addrinfo.h"
+
+#ifdef __DJGPP__
+
+#ifdef WATTCP
 #define SELECTTEST
+#endif
+
+#elif defined(HAVE_LWIP)
+#define SELECTTEST
+#elif !defined( _arch_dreamcast)
+#define SELECTTEST
+#endif
+
 #define DEFAULTPORT "5029"
 
 #if defined (USE_WINSOCK) && !defined (NONET)
-	typedef SOCKET SOCKET_TYPE;
-	#define ERRSOCKET (SOCKET_ERROR)
+typedef SOCKET SOCKET_TYPE;
+#define ERRSOCKET (SOCKET_ERROR)
 #else
-	#if defined (__unix__) || defined (__APPLE__) || defined (__HAIKU__)
-		typedef int SOCKET_TYPE;
-	#else
-		typedef unsigned long SOCKET_TYPE;
-	#endif
-	#define ERRSOCKET (-1)
+#if (defined (__unix__) && !defined (MSDOS)) || defined (__APPLE__) || defined (__HAIKU__) || defined(_PS3)
+typedef int SOCKET_TYPE;
+#else
+typedef unsigned long SOCKET_TYPE;
+#endif
+#define ERRSOCKET (-1)
+#endif
+
+#if (defined (WATTCP) && !defined (__libsocket_socklen_t)) || defined (USE_WINSOCK1)
+typedef int socklen_t;
 #endif
 
 #ifndef NONET
-	// define socklen_t in DOS/Windows if it is not already defined
-	#ifdef USE_WINSOCK1
-		typedef int socklen_t;
-	#endif
-	static SOCKET_TYPE mysockets[MAXNETNODES+1] = {ERRSOCKET};
-	static size_t mysocketses = 0;
-	static int myfamily[MAXNETNODES+1] = {0};
-	static SOCKET_TYPE nodesocket[MAXNETNODES+1] = {ERRSOCKET};
-	static mysockaddr_t clientaddress[MAXNETNODES+1];
-	static mysockaddr_t broadcastaddress[MAXNETNODES+1];
-	static size_t broadcastaddresses = 0;
-	static boolean nodeconnected[MAXNETNODES+1];
-	static mysockaddr_t banned[MAXBANS];
-	static UINT8 bannedmask[MAXBANS];
-	/* See ../doc/Holepunch-Protocol.txt */
-	static const INT32 hole_punch_magic = MSBF_LONG (0x52eb11);
+static SOCKET_TYPE mysockets[MAXNETNODES+1] = {ERRSOCKET};
+static size_t mysocketses = 0;
+static int myfamily[MAXNETNODES+1] = {0};
+static SOCKET_TYPE nodesocket[MAXNETNODES+1] = {ERRSOCKET};
+static mysockaddr_t clientaddress[MAXNETNODES+1];
+static mysockaddr_t broadcastaddress[MAXNETNODES+1];
+static size_t broadcastaddresses = 0;
+static boolean nodeconnected[MAXNETNODES+1];
+static mysockaddr_t banned[MAXBANS];
+static UINT8 bannedmask[MAXBANS];
 #endif
 
 static size_t numbans = 0;
 static boolean SOCK_bannednode[MAXNETNODES+1]; /// \note do we really need the +1?
 static boolean init_tcp_driver = false;
 
-static const char *serverport_name = DEFAULTPORT;
-static const char *clientport_name;/* any port */
+static char port_name[8] = DEFAULTPORT;
 
 #ifndef NONET
+
+#ifdef WATTCP
+static void wattcp_outch(char s)
+{
+	static char old = '\0';
+	char pr[2] = {s,0};
+	if (s == old && old == ' ') return;
+	else old = s;
+	if (s == '\r') CONS_Printf("\n");
+	else if (s != '\n') CONS_Printf(pr);
+}
+#endif
+
 #ifdef USE_WINSOCK
 // stupid microsoft makes things complicated
 static char *get_WSAErrorStr(int e)
@@ -454,7 +523,7 @@ static void cleanupnodes(void)
 
 	// Why can't I start at zero?
 	for (j = 1; j < MAXNETNODES; j++)
-		if (!(nodeingame[j] || SendingFile(j)))
+		if (!(nodeingame[j] || SV_SendingFile(j)))
 			nodeconnected[j] = false;
 }
 
@@ -526,55 +595,6 @@ void Command_Numnodes(void)
 #endif
 
 #ifndef NONET
-/* not one of the reserved "local" addresses */
-static boolean
-is_external_address (UINT32 p)
-{
-	UINT8 a = (p & 255);
-	UINT8 b = ((p >> 8) & 255);
-
-	if (p == (UINT32)~0)/* 255.255.255.255 */
-		return 0;
-
-	switch (a)
-	{
-		case 0:
-		case 10:
-		case 127:
-			return false;
-		case 172:
-			return (b & ~15) != 16;/* 16 - 31 */
-		case 192:
-			return b != 168;
-		default:
-			return true;
-	}
-}
-
-static boolean hole_punch(ssize_t c)
-{
-	/* See ../doc/Holepunch-Protocol.txt */
-	if (cv_holepunchserver.string[0] &&
-			c == 10 && holepunchpacket->magic == hole_punch_magic &&
-			is_external_address(ntohl(holepunchpacket->addr)))
-	{
-		mysockaddr_t addr;
-		addr.ip4.sin_family      = AF_INET;
-		addr.ip4.sin_addr.s_addr = holepunchpacket->addr;
-		addr.ip4.sin_port        = holepunchpacket->port;
-		sendto(mysockets[0], NULL, 0, 0, &addr.any, sizeof addr.ip4);
-
-		CONS_Debug(DBG_NETPLAY,
-				"hole punching request from %s\n", SOCK_AddrToStr(&addr));
-
-		return true;
-	}
-	else
-	{
-		return false;
-	}
-}
-
 // Returns true if a packet was received from a new node, false in all other cases
 static boolean SOCK_Get(void)
 {
@@ -589,21 +609,8 @@ static boolean SOCK_Get(void)
 		fromlen = (socklen_t)sizeof(fromaddress);
 		c = recvfrom(mysockets[n], (char *)&doomcom->data, MAXPACKETLENGTH, 0,
 			(void *)&fromaddress, &fromlen);
-		if (c > 0)
+		if (c != ERRSOCKET)
 		{
-#ifdef USE_STUN
-			if (STUN_got_response(doomcom->data, c))
-			{
-				return false;
-				break;
-			}
-#endif
-
-			if (hole_punch(c))
-			{
-				break;
-			}
-
 			// find remote node number
 			for (j = 1; j <= MAXNETNODES; j++) //include LAN
 			{
@@ -799,11 +806,13 @@ static SOCKET_TYPE UDP_Bind(int family, struct sockaddr *addr, socklen_t addrlen
 	int opt;
 	socklen_t opts;
 #ifdef FIONBIO
+#ifdef WATTCP
+	char trueval = true;
+#else
 	unsigned long trueval = true;
 #endif
+#endif
 	mysockaddr_t straddr;
-	struct sockaddr_in sin;
-	socklen_t len = sizeof(sin);
 
 	if (s == (SOCKET_TYPE)ERRSOCKET)
 		return (SOCKET_TYPE)ERRSOCKET;
@@ -897,23 +906,18 @@ static SOCKET_TYPE UDP_Bind(int family, struct sockaddr *addr, socklen_t addrlen
 			CONS_Printf(M_GetText("Network system buffer set to: %dKb\n"), opt>>10);
 	}
 
-	if (getsockname(s, (struct sockaddr *)&sin, &len) == -1)
-		CONS_Alert(CONS_WARNING, M_GetText("Failed to get port number\n"));
-	else
-		current_port = (UINT16)ntohs(sin.sin_port);
-
 	return s;
 }
 
 static boolean UDP_Socket(void)
 {
+	const char *sock_port = NULL;
 	size_t s;
 	struct my_addrinfo *ai, *runp, hints;
 	int gaie;
 #ifdef HAVE_IPV6
 	const INT32 b_ipv6 = M_CheckParm("-ipv6");
 #endif
-	const char *serv;
 
 
 	for (s = 0; s < mysocketses; s++)
@@ -929,16 +933,20 @@ static boolean UDP_Socket(void)
 	hints.ai_socktype = SOCK_DGRAM;
 	hints.ai_protocol = IPPROTO_UDP;
 
-	if (serverrunning)
-		serv = serverport_name;
+	if (M_CheckParm("-clientport"))
+	{
+		if (!M_IsNextParm())
+			I_Error("syntax: -clientport <portnum>");
+		sock_port = M_GetNextParm();
+	}
 	else
-		serv = clientport_name;
+		sock_port = port_name;
 
 	if (M_CheckParm("-bindaddr"))
 	{
 		while (M_IsNextParm())
 		{
-			gaie = I_getaddrinfo(M_GetNextParm(), serv, &hints, &ai);
+			gaie = I_getaddrinfo(M_GetNextParm(), sock_port, &hints, &ai);
 			if (gaie == 0)
 			{
 				runp = ai;
@@ -959,7 +967,7 @@ static boolean UDP_Socket(void)
 	}
 	else
 	{
-		gaie = I_getaddrinfo("0.0.0.0", serv, &hints, &ai);
+		gaie = I_getaddrinfo("0.0.0.0", sock_port, &hints, &ai);
 		if (gaie == 0)
 		{
 			runp = ai;
@@ -974,8 +982,8 @@ static boolean UDP_Socket(void)
 #ifdef HAVE_MINIUPNPC
 					if (UPNP_support)
 					{
-						I_UPnP_rem(serverport_name, "UDP");
-						I_UPnP_add(NULL, serverport_name, "UDP");
+						I_UPnP_rem(sock_port, "UDP");
+						I_UPnP_add(NULL, sock_port, "UDP");
 					}
 #endif
 				}
@@ -992,7 +1000,7 @@ static boolean UDP_Socket(void)
 		{
 			while (M_IsNextParm())
 			{
-				gaie = I_getaddrinfo(M_GetNextParm(), serv, &hints, &ai);
+				gaie = I_getaddrinfo(M_GetNextParm(), sock_port, &hints, &ai);
 				if (gaie == 0)
 				{
 					runp = ai;
@@ -1013,7 +1021,7 @@ static boolean UDP_Socket(void)
 		}
 		else
 		{
-			gaie = I_getaddrinfo("::", serv, &hints, &ai);
+			gaie = I_getaddrinfo("::", sock_port, &hints, &ai);
 			if (gaie == 0)
 			{
 				runp = ai;
@@ -1169,7 +1177,70 @@ boolean I_InitTcpDriver(void)
 		CONS_Debug(DBG_NETPLAY, "WinSock description: %s\n",WSAData.szDescription);
 		CONS_Debug(DBG_NETPLAY, "WinSock System Status: %s\n",WSAData.szSystemStatus);
 #endif
+#ifdef HAVE_LWIP
+		lwip_kos_init();
+#elif defined(_arch_dreamcast)
+		//return;
+		net_init();
+#endif
+#ifdef __DJGPP__
+#ifdef WATTCP // Alam_GBC: survive bootp, dhcp, rarp and wattcp/pktdrv from failing to load
+		survive_eth   = 1; // would be needed to not exit if pkt_eth_init() fails
+		survive_bootp = 1; // ditto for BOOTP
+		survive_dhcp  = 1; // ditto for DHCP/RARP
+		survive_rarp  = 1;
+		//_watt_do_exit = false;
+		//_watt_handle_cbreak = false;
+		//_watt_no_config = true;
+		_outch = wattcp_outch;
+		init_misc();
+//#ifdef DEBUGFILE
+		dbug_init();
+//#endif
+		switch (sock_init())
+		{
+			case 0:
+				init_tcp_driver = true;
+				break;
+			case 3:
+				CONS_Debug(DBG_NETPLAY, "No packet driver detected\n");
+				break;
+			case 4:
+				CONS_Debug(DBG_NETPLAY, "Error while talking to packet driver\n");
+				break;
+			case 5:
+				CONS_Debug(DBG_NETPLAY, "BOOTP failed\n");
+				break;
+			case 6:
+				CONS_Debug(DBG_NETPLAY, "DHCP failed\n");
+				break;
+			case 7:
+				CONS_Debug(DBG_NETPLAY, "RARP failed\n");
+				break;
+			case 8:
+				CONS_Debug(DBG_NETPLAY, "TCP/IP failed\n");
+				break;
+			case 9:
+				CONS_Debug(DBG_NETPLAY, "PPPoE login/discovery failed\n");
+				break;
+			default:
+				CONS_Debug(DBG_NETPLAY, "Unknown error with TCP/IP stack\n");
+				break;
+		}
+		hires_timer(0);
+#else // wattcp
+		if (__lsck_init())
+			init_tcp_driver = true;
+		else
+			CONS_Debug(DBG_NETPLAY, "No TCP/IP driver detected\n");
+#endif // libsocket
+#endif // __DJGPP__
+#ifdef _PS3
+		netInitialize();
+#endif
+#ifndef __DJGPP__
 		init_tcp_driver = true;
+#endif
 	}
 #endif
 	if (!tcp_was_up && init_tcp_driver)
@@ -1194,8 +1265,10 @@ static void SOCK_CloseSocket(void)
 		if (mysockets[i] != (SOCKET_TYPE)ERRSOCKET
 		 && FD_ISSET(mysockets[i], &masterset))
 		{
+#if !defined (__DJGPP__) || defined (WATTCP)
 			FD_CLR(mysockets[i], &masterset);
 			close(mysockets[i]);
+#endif
 		}
 		mysockets[i] = ERRSOCKET;
 	}
@@ -1212,19 +1285,36 @@ void I_ShutdownTcpDriver(void)
 	WS_addrinfocleanup();
 	WSACleanup();
 #endif
+#ifdef HAVE_LWIP
+	lwip_kos_shutdown();
+#elif defined(_arch_dreamcast)
+	net_shutdown();
+#endif
+#ifdef __DJGPP__
+#ifdef WATTCP // wattcp
+	//_outch = NULL;
+	sock_exit();
+#else
+	__lsck_uninit();
+#endif // libsocket
+#endif // __DJGPP__
+#ifdef _PS3
+	netDeinitialize();
+#endif
 	CONS_Printf("shut down\n");
 	init_tcp_driver = false;
 #endif
 }
 
 #ifndef NONET
-static boolean SOCK_GetAddr(struct sockaddr_in *sin, const char *address, const char *port, boolean test)
+static SINT8 SOCK_NetMakeNodewPort(const char *address, const char *port)
 {
+	SINT8 newnode = -1;
 	struct my_addrinfo *ai = NULL, *runp, hints;
 	int gaie;
 
-	if (!port || !port[0])
-		port = DEFAULTPORT;
+	 if (!port || !port[0])
+		port = port_name;
 
 	DEBFILE(va("Creating new node: %s@%s\n", address, port));
 
@@ -1235,104 +1325,30 @@ static boolean SOCK_GetAddr(struct sockaddr_in *sin, const char *address, const 
 	hints.ai_protocol = IPPROTO_UDP;
 
 	gaie = I_getaddrinfo(address, port, &hints, &ai);
-
-	if (gaie != 0)
+	if (gaie == 0)
+	{
+		newnode = getfreenode();
+	}
+	if (newnode == -1)
 	{
 		I_freeaddrinfo(ai);
-		return false;
+		return -1;
 	}
-	
-	runp = ai;
+	else
+		runp = ai;
 
-	if (test)
+	while (runp != NULL)
 	{
-		while (runp != NULL)
+		// find ip of the server
+		if (sendto(mysockets[0], NULL, 0, 0, runp->ai_addr, runp->ai_addrlen) == 0)
 		{
-			// find ip of the server
-			if (sendto(mysockets[0], NULL, 0, 0, runp->ai_addr, runp->ai_addrlen) == 0)
-				break;
-				
-			runp = runp->ai_next;
+			memcpy(&clientaddress[newnode], runp->ai_addr, runp->ai_addrlen);
+			break;
 		}
+		runp = runp->ai_next;
 	}
-
-	if (runp != NULL)
-		memcpy(sin, runp->ai_addr, runp->ai_addrlen);
-
 	I_freeaddrinfo(ai);
-	
-	return (runp != NULL);
-}
-
-static SINT8 SOCK_NetMakeNodewPort(const char *address, const char *port)
-{
-	SINT8 newnode = getfreenode();
-
-	DEBFILE(va("Creating new node: %s@%s\n", address, port));
-
-	if (newnode != -1)
-	{
-		if (!SOCK_GetAddr(&clientaddress[newnode].ip4, address, port, true))
-		{
-			nodeconnected[newnode] = false;
-			return -1;
-		}
-	}
-
 	return newnode;
-}
-
-/* See ../doc/Holepunch-Protocol.txt */
-static void rendezvous(int size)
-{
-	char *addrs = strdup(cv_holepunchserver.string);
-
-	char *host = strtok(addrs, ":");
-	char *port = strtok(NULL,  ":");
-
-	static mysockaddr_t rzv;
-	static tic_t refreshtic = (tic_t)-1;
-
-	tic_t tic = I_GetTime();
-
-	if (tic != refreshtic)
-	{
-		if (SOCK_GetAddr(&rzv.ip4, host, (port ? port : "7777"), false))
-		{
-			refreshtic = tic;
-		}
-		else
-		{
-			CONS_Alert(CONS_ERROR, "Failed to contact rendezvous server (%s).\n",
-					cv_holepunchserver.string);
-		}
-	}
-	
-	if (tic == refreshtic)
-	{
-		holepunchpacket->magic = hole_punch_magic;
-		sendto(mysockets[0], doomcom->data, size, 0, &rzv.any, sizeof rzv.ip4);
-	}
-
-	free(addrs);
-}
-
-static void SOCK_RequestHolePunch(INT32 node)
-{
-	mysockaddr_t * addr = &clientaddress[node];
-
-	holepunchpacket->addr = addr->ip4.sin_addr.s_addr;
-	holepunchpacket->port = addr->ip4.sin_port;
-
-	CONS_Debug(DBG_NETPLAY,
-			"requesting hole punch to node %s\n", SOCK_AddrToStr(addr));
-
-	rendezvous(10);
-}
-
-static void SOCK_RegisterHolePunch(void)
-{
-	rendezvous(4);
 }
 #endif
 
@@ -1358,9 +1374,6 @@ static boolean SOCK_OpenSocket(void)
 	I_NetCanSend = SOCK_CanSend;
 	I_NetCanGet = SOCK_CanGet;
 #endif
-
-	I_NetRequestHolePunch = SOCK_RequestHolePunch;
-	I_NetRegisterHolePunch = SOCK_RegisterHolePunch;
 
 	// build the socket but close it first
 	SOCK_CloseSocket();
@@ -1460,25 +1473,19 @@ static void SOCK_ClearBans(void)
 boolean I_InitTcpNetwork(void)
 {
 	char serverhostname[255];
-	const char *urlparam = NULL;
 	boolean ret = false;
 	// initilize the OS's TCP/IP stack
 	if (!I_InitTcpDriver())
 		return false;
 
-	if (M_CheckParm("-port") || M_CheckParm("-serverport"))
-	// Combined -udpport and -clientport into -port
-	// As it was really redundant having two seperate parms that does the same thing
-	/* Sorry Steel, I'm adding these back. But -udpport is a stupid name. */
+	if (M_CheckParm("-udpport"))
 	{
-		/*
-		If it's NULL, that's okay! Because then
-		we'll get a random port from getaddrinfo.
-		*/
-		serverport_name = M_GetNextParm();
+		if (M_IsNextParm())
+			strcpy(port_name, M_GetNextParm());
+		else
+			strcpy(port_name, "0");
 	}
-	if (M_CheckParm("-clientport"))
-		clientport_name = M_GetNextParm();
+	current_port = (UINT16)atoi(port_name);
 
 	// parse network game options,
 	if (M_CheckParm("-server") || dedicated)
@@ -1514,12 +1521,10 @@ boolean I_InitTcpNetwork(void)
 
 		ret = true;
 	}
-	else if ((urlparam = M_GetUrlProtocolArg()) != NULL || M_CheckParm("-connect"))
+	else if (M_CheckParm("-connect"))
 	{
-		if (urlparam != NULL)
-			strlcpy(serverhostname, urlparam, sizeof(serverhostname));
-		else if (M_IsNextParm())
-			strlcpy(serverhostname, M_GetNextParm(), sizeof(serverhostname));
+		if (M_IsNextParm())
+			strcpy(serverhostname, M_GetNextParm());
 		else
 			serverhostname[0] = 0; // assuming server in the LAN, use broadcast to detect it
 

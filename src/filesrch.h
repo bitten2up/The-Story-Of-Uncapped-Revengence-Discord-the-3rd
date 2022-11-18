@@ -7,7 +7,6 @@
 #include "doomdef.h"
 #include "d_netfil.h"
 #include "m_menu.h" // MAXSTRINGLENGTH
-#include "w_wad.h"
 
 extern consvar_t cv_addons_option, cv_addons_folder, cv_addons_md5, cv_addons_showall, cv_addons_search_case, cv_addons_search_type;
 
@@ -29,16 +28,6 @@ extern consvar_t cv_addons_option, cv_addons_folder, cv_addons_md5, cv_addons_sh
 filestatus_t filesearch(char *filename, const char *startpath, const UINT8 *wantedmd5sum,
 	boolean completepath, int maxsearchdepth);
 
-INT32 pathisdirectory(const char *path);
-INT32 samepaths(const char *path1, const char *path2);
-INT32 concatpaths(const char *path, const char *startpath);
-
-#ifndef AVOID_ERRNO
-extern int direrror;
-#endif
-
-lumpinfo_t *getdirectoryfiles(const char *path, UINT16 *nlmp, UINT16 *nfolders);
-
 #define menudepth 20
 
 extern char menupath[1024];
@@ -52,6 +41,9 @@ extern size_t sizedirmenu;
 extern size_t dir_on[menudepth];
 extern UINT8 refreshdirmenu;
 extern char *refreshdirname;
+
+extern size_t packetsizetally;
+extern size_t mainwadstally;
 
 typedef enum
 {
@@ -68,7 +60,7 @@ typedef enum
 #endif
 	EXT_PK3,
 	EXT_SOC,
-	EXT_LUA,
+	EXT_LUA, // allowed even if not HAVE_BLUA so that we can yell on load attempt
 	NUM_EXT,
 	NUM_EXT_TABLE = NUM_EXT-EXT_START,
 	EXT_LOADED = 0x80
@@ -102,4 +94,5 @@ typedef enum
 void closefilemenu(boolean validsize);
 void searchfilemenu(char *tempname);
 boolean preparefilemenu(boolean samedepth);
+
 #endif // __FILESRCH_H__

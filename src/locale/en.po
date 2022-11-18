@@ -466,7 +466,7 @@ msgid ""
 msgstr ""
 
 #: d_clisrv.c:1764
-msgid "has been kicked (No reason given)\n"
+msgid "has been kicked (Go away)\n"
 msgstr ""
 
 #: d_clisrv.c:1768
@@ -474,7 +474,7 @@ msgid "left the game (Broke ping limit)\n"
 msgstr ""
 
 #: d_clisrv.c:1772
-msgid "left the game (Synch failure)\n"
+msgid "left the game (Consistency failure)\n"
 msgstr ""
 
 #: d_clisrv.c:1778
@@ -501,7 +501,7 @@ msgid "left the game\n"
 msgstr ""
 
 #: d_clisrv.c:1798
-msgid "has been banned (No reason given)\n"
+msgid "has been banned (Don't come back)\n"
 msgstr ""
 
 #: d_clisrv.c:1802
@@ -1377,6 +1377,11 @@ msgstr ""
 msgid "modifiedgame is false, you can unlock secrets\n"
 msgstr ""
 
+#: d_netcmd.c:4599
+#, c-format
+msgid "Valid skin numbers are 0 to %d (-1 disables)\n"
+msgstr ""
+
 #: d_netcmd.c:4617 d_netcmd.c:4629
 msgid "You may not change your name when chat is muted.\n"
 msgstr ""
@@ -2068,7 +2073,7 @@ msgstr ""
 
 #: m_cheat.c:292
 #, c-format
-msgid "Cheese Mode %s\n"
+msgid "Sissy Mode %s\n"
 msgstr ""
 
 #: m_cheat.c:315 m_cheat.c:349 m_cheat.c:514 m_cheat.c:538 m_cheat.c:557
@@ -3825,7 +3830,7 @@ msgid "Music lump is not MID music format\n"
 msgstr ""
 
 #: win32/win_snd.c:2128
-msgid "I_LoadSong: StreamBufferSetup FAILED"
+msgid "I_RegisterSong: StreamBufferSetup FAILED"
 msgstr ""
 
 #: win32/win_sys.c:892

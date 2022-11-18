@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
+// Copyright (C) 1999-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -21,8 +21,6 @@
 #pragma interface
 #endif
 
-#define MAXPREDICTTICS 12
-
 // Button/action code definitions.
 typedef enum
 {
@@ -33,7 +31,7 @@ typedef enum
 	BT_WEAPONPREV = 1<<5,
 
 	BT_ATTACK     = 1<<6, // shoot rings
-	BT_SPIN       = 1<<7,
+	BT_USE        = 1<<7, // spin
 	BT_CAMLEFT    = 1<<8, // turn camera left
 	BT_CAMRIGHT   = 1<<9, // turn camera right
 	BT_TOSSFLAG   = 1<<10,
@@ -65,7 +63,6 @@ typedef struct
 	INT16 angleturn; // <<16 for angle delta - saved as 1 byte into demos
 	INT16 aiming; // vertical aiming, see G_BuildTicCmd
 	UINT16 buttons;
-	UINT8 latency; // Netgames: how many tics ago was this ticcmd generated from this player's end?
 } ATTRPACK ticcmd_t;
 
 #if defined(_MSC_VER)

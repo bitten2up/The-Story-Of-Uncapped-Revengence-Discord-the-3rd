@@ -1,13 +1,19 @@
-// SONIC ROBO BLAST 2
+// Emacs style mode select   -*- C++ -*-
 //-----------------------------------------------------------------------------
-// Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
 //
-// This program is free software distributed under the
-// terms of the GNU General Public License, version 2.
-// See the 'LICENSE' file for more details.
+// Copyright (C) 1998-2000 by DooM Legacy Team.
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; either version 2
+// of the License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
 //-----------------------------------------------------------------------------
-/// \file hw_main.c
+/// \file
 /// \brief hardware renderer, using the standard HardWareRender driver DLL for SRB2
 
 #include <math.h>
@@ -18,16 +24,12 @@
 #include "hw_glob.h"
 #include "hw_light.h"
 #include "hw_drv.h"
-#include "hw_batching.h"
 
 #include "../i_video.h" // for rendermode == render_glide
 #include "../v_video.h"
 #include "../p_local.h"
 #include "../p_setup.h"
-#include "../r_fps.h"
 #include "../r_local.h"
-#include "../r_patch.h"
-#include "../r_picformats.h"
 #include "../r_bsp.h"
 #include "../d_clisrv.h"
 #include "../w_wad.h"
@@ -37,10 +39,9 @@
 #include "../st_stuff.h"
 #include "../i_system.h"
 #include "../m_cheat.h"
-#include "../f_finale.h"
-#include "../r_things.h" // R_GetShadowZ
-#include "../d_main.h"
+#ifdef ESLOPE
 #include "../p_slopes.h"
+#endif
 #include "hw_md2.h"
 
 #ifdef NEWCLIP
@@ -49,6 +50,7 @@
 
 #define R_FAKEFLOORS
 #define HWPRECIP
+#define SORTING
 //#define POLYSKY
 
 // ==========================================================================
@@ -67,11 +69,229 @@ static void HWR_ProjectSprite(mobj_t *thing);
 static void HWR_ProjectPrecipitationSprite(precipmobj_t *thing);
 #endif
 
-void HWR_AddTransparentFloor(levelflat_t *levelflat, extrasubsector_t *xsub, boolean isceiling, fixed_t fixedheight, INT32 lightlevel, INT32 alpha, sector_t *FOFSector, FBITFIELD blend, boolean fogplane, extracolormap_t *planecolormap);
-void HWR_AddTransparentPolyobjectFloor(levelflat_t *levelflat, polyobj_t *polysector, boolean isceiling, fixed_t fixedheight,
+#ifdef SORTING
+void HWR_AddTransparentFloor(lumpnum_t lumpnum, extrasubsector_t *xsub, boolean isceiling, fixed_t fixedheight,
+                             INT32 lightlevel, INT32 alpha, sector_t *FOFSector, FBITFIELD blend, boolean fogplane, extracolormap_t *planecolormap);
+void HWR_AddTransparentPolyobjectFloor(lumpnum_t lumpnum, polyobj_t *polysector, boolean isceiling, fixed_t fixedheight,
                              INT32 lightlevel, INT32 alpha, sector_t *FOFSector, FBITFIELD blend, extracolormap_t *planecolormap);
+#else
+static void HWR_Add3DWater(lumpnum_t lumpnum, extrasubsector_t *xsub, fixed_t fixedheight,
+                           INT32 lightlevel, INT32 alpha, sector_t *FOFSector);
+static void HWR_Render3DWater(void);
+static void HWR_RenderTransparentWalls(void);
+#endif
+static void HWR_FoggingOn(void);
+static UINT32 atohex(const char *s);
+
+static void CV_filtermode_ONChange(void);
+static void CV_anisotropic_ONChange(void);
+static void CV_FogDensity_ONChange(void);
+static void CV_grFov_OnChange(void);
+// ==========================================================================
+//                                          3D ENGINE COMMANDS & CONSOLE VARS
+// ==========================================================================
+
+static CV_PossibleValue_t grfov_cons_t[] = {{0, "MIN"}, {179*FRACUNIT, "MAX"}, {0, NULL}};
+static CV_PossibleValue_t grfiltermode_cons_t[]= {{HWD_SET_TEXTUREFILTER_POINTSAMPLED, "Nearest"},
+	{HWD_SET_TEXTUREFILTER_BILINEAR, "Bilinear"}, {HWD_SET_TEXTUREFILTER_TRILINEAR, "Trilinear"},
+	{HWD_SET_TEXTUREFILTER_MIXED1, "Linear_Nearest"},
+	{HWD_SET_TEXTUREFILTER_MIXED2, "Nearest_Linear"},
+	{HWD_SET_TEXTUREFILTER_MIXED3, "Nearest_Mipmap"},
+	{0, NULL}};
+CV_PossibleValue_t granisotropicmode_cons_t[] = {{1, "MIN"}, {16, "MAX"}, {0, NULL}};
 
 boolean drawsky = true;
+
+// needs fix: walls are incorrectly clipped one column less
+#ifndef NEWCLIP
+static consvar_t cv_grclipwalls = {"gr_clipwalls", "Off", 0, CV_OnOff, NULL, 0, NULL, NULL, 0, 0, NULL};
+#endif
+//development variables for diverse uses
+static consvar_t cv_gralpha = {"gr_alpha", "160", 0, CV_Unsigned, NULL, 0, NULL, NULL, 0, 0, NULL};
+static consvar_t cv_grbeta = {"gr_beta", "0", 0, CV_Unsigned, NULL, 0, NULL, NULL, 0, 0, NULL};
+
+static float HWRWipeCounter = 1.0f;
+consvar_t cv_grrounddown = {"gr_rounddown", "Off", 0, CV_OnOff, NULL, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_grfov = {"gr_fov", "90", CV_FLOAT|CV_CALL, grfov_cons_t, CV_grFov_OnChange, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_grfogdensity = {"gr_fogdensity", "150", CV_CALL|CV_NOINIT, CV_Unsigned,
+                             CV_FogDensity_ONChange, 0, NULL, NULL, 0, 0, NULL};
+
+// Unfortunately, this can no longer be saved..
+consvar_t cv_grfiltermode = {"gr_filtermode", "Nearest", CV_CALL, grfiltermode_cons_t,
+                             CV_filtermode_ONChange, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_granisotropicmode = {"gr_anisotropicmode", "1", CV_CALL, granisotropicmode_cons_t,
+                             CV_anisotropic_ONChange, 0, NULL, NULL, 0, 0, NULL};
+//static consvar_t cv_grzbuffer = {"gr_zbuffer", "On", 0, CV_OnOff};
+consvar_t cv_grcorrecttricks = {"gr_correcttricks", "Off", 0, CV_OnOff, NULL, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_grsolvetjoin = {"gr_solvetjoin", "On", 0, CV_OnOff, NULL, 0, NULL, NULL, 0, 0, NULL};
+
+static void CV_FogDensity_ONChange(void)
+{
+	HWD.pfnSetSpecialState(HWD_SET_FOG_DENSITY, cv_grfogdensity.value);
+}
+
+static void CV_filtermode_ONChange(void)
+{
+	HWD.pfnSetSpecialState(HWD_SET_TEXTUREFILTERMODE, cv_grfiltermode.value);
+}
+
+static void CV_anisotropic_ONChange(void)
+{
+	HWD.pfnSetSpecialState(HWD_SET_TEXTUREANISOTROPICMODE, cv_granisotropicmode.value);
+}
+
+/*
+ * lookuptable for lightvalues
+ * calculated as follow:
+ * floatlight = (1.0-exp((light^3)*gamma)) / (1.0-exp(1.0*gamma));
+ * gamma=-0,2;-2,0;-4,0;-6,0;-8,0
+ * light = 0,0 .. 1,0
+ */
+static const float lighttable[5][256] =
+{
+  {
+    0.00000f,0.00000f,0.00000f,0.00000f,0.00000f,0.00001f,0.00001f,0.00002f,0.00003f,0.00004f,
+    0.00006f,0.00008f,0.00010f,0.00013f,0.00017f,0.00020f,0.00025f,0.00030f,0.00035f,0.00041f,
+    0.00048f,0.00056f,0.00064f,0.00073f,0.00083f,0.00094f,0.00106f,0.00119f,0.00132f,0.00147f,
+    0.00163f,0.00180f,0.00198f,0.00217f,0.00237f,0.00259f,0.00281f,0.00305f,0.00331f,0.00358f,
+    0.00386f,0.00416f,0.00447f,0.00479f,0.00514f,0.00550f,0.00587f,0.00626f,0.00667f,0.00710f,
+    0.00754f,0.00800f,0.00848f,0.00898f,0.00950f,0.01003f,0.01059f,0.01117f,0.01177f,0.01239f,
+    0.01303f,0.01369f,0.01437f,0.01508f,0.01581f,0.01656f,0.01734f,0.01814f,0.01896f,0.01981f,
+    0.02069f,0.02159f,0.02251f,0.02346f,0.02444f,0.02544f,0.02647f,0.02753f,0.02862f,0.02973f,
+    0.03088f,0.03205f,0.03325f,0.03448f,0.03575f,0.03704f,0.03836f,0.03971f,0.04110f,0.04252f,
+    0.04396f,0.04545f,0.04696f,0.04851f,0.05009f,0.05171f,0.05336f,0.05504f,0.05676f,0.05852f,
+    0.06031f,0.06214f,0.06400f,0.06590f,0.06784f,0.06981f,0.07183f,0.07388f,0.07597f,0.07810f,
+    0.08027f,0.08248f,0.08473f,0.08702f,0.08935f,0.09172f,0.09414f,0.09659f,0.09909f,0.10163f,
+    0.10421f,0.10684f,0.10951f,0.11223f,0.11499f,0.11779f,0.12064f,0.12354f,0.12648f,0.12946f,
+    0.13250f,0.13558f,0.13871f,0.14188f,0.14511f,0.14838f,0.15170f,0.15507f,0.15850f,0.16197f,
+    0.16549f,0.16906f,0.17268f,0.17635f,0.18008f,0.18386f,0.18769f,0.19157f,0.19551f,0.19950f,
+    0.20354f,0.20764f,0.21179f,0.21600f,0.22026f,0.22458f,0.22896f,0.23339f,0.23788f,0.24242f,
+    0.24702f,0.25168f,0.25640f,0.26118f,0.26602f,0.27091f,0.27587f,0.28089f,0.28596f,0.29110f,
+    0.29630f,0.30156f,0.30688f,0.31226f,0.31771f,0.32322f,0.32879f,0.33443f,0.34013f,0.34589f,
+    0.35172f,0.35761f,0.36357f,0.36960f,0.37569f,0.38185f,0.38808f,0.39437f,0.40073f,0.40716f,
+    0.41366f,0.42022f,0.42686f,0.43356f,0.44034f,0.44718f,0.45410f,0.46108f,0.46814f,0.47527f,
+    0.48247f,0.48974f,0.49709f,0.50451f,0.51200f,0.51957f,0.52721f,0.53492f,0.54271f,0.55058f,
+    0.55852f,0.56654f,0.57463f,0.58280f,0.59105f,0.59937f,0.60777f,0.61625f,0.62481f,0.63345f,
+    0.64217f,0.65096f,0.65984f,0.66880f,0.67783f,0.68695f,0.69615f,0.70544f,0.71480f,0.72425f,
+    0.73378f,0.74339f,0.75308f,0.76286f,0.77273f,0.78268f,0.79271f,0.80283f,0.81304f,0.82333f,
+    0.83371f,0.84417f,0.85472f,0.86536f,0.87609f,0.88691f,0.89781f,0.90880f,0.91989f,0.93106f,
+    0.94232f,0.95368f,0.96512f,0.97665f,0.98828f,1.00000f
+  },
+  {
+    0.00000f,0.00000f,0.00000f,0.00000f,0.00001f,0.00002f,0.00003f,0.00005f,0.00007f,0.00010f,
+    0.00014f,0.00019f,0.00024f,0.00031f,0.00038f,0.00047f,0.00057f,0.00069f,0.00081f,0.00096f,
+    0.00112f,0.00129f,0.00148f,0.00170f,0.00193f,0.00218f,0.00245f,0.00274f,0.00306f,0.00340f,
+    0.00376f,0.00415f,0.00456f,0.00500f,0.00547f,0.00597f,0.00649f,0.00704f,0.00763f,0.00825f,
+    0.00889f,0.00957f,0.01029f,0.01104f,0.01182f,0.01264f,0.01350f,0.01439f,0.01532f,0.01630f,
+    0.01731f,0.01836f,0.01945f,0.02058f,0.02176f,0.02298f,0.02424f,0.02555f,0.02690f,0.02830f,
+    0.02974f,0.03123f,0.03277f,0.03436f,0.03600f,0.03768f,0.03942f,0.04120f,0.04304f,0.04493f,
+    0.04687f,0.04886f,0.05091f,0.05301f,0.05517f,0.05738f,0.05964f,0.06196f,0.06434f,0.06677f,
+    0.06926f,0.07181f,0.07441f,0.07707f,0.07979f,0.08257f,0.08541f,0.08831f,0.09126f,0.09428f,
+    0.09735f,0.10048f,0.10368f,0.10693f,0.11025f,0.11362f,0.11706f,0.12056f,0.12411f,0.12773f,
+    0.13141f,0.13515f,0.13895f,0.14281f,0.14673f,0.15072f,0.15476f,0.15886f,0.16303f,0.16725f,
+    0.17153f,0.17587f,0.18028f,0.18474f,0.18926f,0.19383f,0.19847f,0.20316f,0.20791f,0.21272f,
+    0.21759f,0.22251f,0.22748f,0.23251f,0.23760f,0.24274f,0.24793f,0.25318f,0.25848f,0.26383f,
+    0.26923f,0.27468f,0.28018f,0.28573f,0.29133f,0.29697f,0.30266f,0.30840f,0.31418f,0.32001f,
+    0.32588f,0.33179f,0.33774f,0.34374f,0.34977f,0.35585f,0.36196f,0.36810f,0.37428f,0.38050f,
+    0.38675f,0.39304f,0.39935f,0.40570f,0.41207f,0.41847f,0.42490f,0.43136f,0.43784f,0.44434f,
+    0.45087f,0.45741f,0.46398f,0.47057f,0.47717f,0.48379f,0.49042f,0.49707f,0.50373f,0.51041f,
+    0.51709f,0.52378f,0.53048f,0.53718f,0.54389f,0.55061f,0.55732f,0.56404f,0.57075f,0.57747f,
+    0.58418f,0.59089f,0.59759f,0.60429f,0.61097f,0.61765f,0.62432f,0.63098f,0.63762f,0.64425f,
+    0.65086f,0.65746f,0.66404f,0.67060f,0.67714f,0.68365f,0.69015f,0.69662f,0.70307f,0.70948f,
+    0.71588f,0.72224f,0.72857f,0.73488f,0.74115f,0.74739f,0.75359f,0.75976f,0.76589f,0.77199f,
+    0.77805f,0.78407f,0.79005f,0.79599f,0.80189f,0.80774f,0.81355f,0.81932f,0.82504f,0.83072f,
+    0.83635f,0.84194f,0.84747f,0.85296f,0.85840f,0.86378f,0.86912f,0.87441f,0.87964f,0.88482f,
+    0.88995f,0.89503f,0.90005f,0.90502f,0.90993f,0.91479f,0.91959f,0.92434f,0.92903f,0.93366f,
+    0.93824f,0.94276f,0.94723f,0.95163f,0.95598f,0.96027f,0.96451f,0.96868f,0.97280f,0.97686f,
+    0.98086f,0.98481f,0.98869f,0.99252f,0.99629f,1.00000f
+  },
+  {
+    0.00000f,0.00000f,0.00000f,0.00001f,0.00002f,0.00003f,0.00005f,0.00008f,0.00013f,0.00018f,
+    0.00025f,0.00033f,0.00042f,0.00054f,0.00067f,0.00083f,0.00101f,0.00121f,0.00143f,0.00168f,
+    0.00196f,0.00227f,0.00261f,0.00299f,0.00339f,0.00383f,0.00431f,0.00483f,0.00538f,0.00598f,
+    0.00661f,0.00729f,0.00802f,0.00879f,0.00961f,0.01048f,0.01140f,0.01237f,0.01340f,0.01447f,
+    0.01561f,0.01680f,0.01804f,0.01935f,0.02072f,0.02215f,0.02364f,0.02520f,0.02682f,0.02850f,
+    0.03026f,0.03208f,0.03397f,0.03594f,0.03797f,0.04007f,0.04225f,0.04451f,0.04684f,0.04924f,
+    0.05172f,0.05428f,0.05691f,0.05963f,0.06242f,0.06530f,0.06825f,0.07129f,0.07441f,0.07761f,
+    0.08089f,0.08426f,0.08771f,0.09125f,0.09487f,0.09857f,0.10236f,0.10623f,0.11019f,0.11423f,
+    0.11836f,0.12257f,0.12687f,0.13125f,0.13571f,0.14027f,0.14490f,0.14962f,0.15442f,0.15931f,
+    0.16427f,0.16932f,0.17445f,0.17966f,0.18496f,0.19033f,0.19578f,0.20130f,0.20691f,0.21259f,
+    0.21834f,0.22417f,0.23007f,0.23605f,0.24209f,0.24820f,0.25438f,0.26063f,0.26694f,0.27332f,
+    0.27976f,0.28626f,0.29282f,0.29944f,0.30611f,0.31284f,0.31962f,0.32646f,0.33334f,0.34027f,
+    0.34724f,0.35426f,0.36132f,0.36842f,0.37556f,0.38273f,0.38994f,0.39718f,0.40445f,0.41174f,
+    0.41907f,0.42641f,0.43378f,0.44116f,0.44856f,0.45598f,0.46340f,0.47084f,0.47828f,0.48573f,
+    0.49319f,0.50064f,0.50809f,0.51554f,0.52298f,0.53042f,0.53784f,0.54525f,0.55265f,0.56002f,
+    0.56738f,0.57472f,0.58203f,0.58932f,0.59658f,0.60381f,0.61101f,0.61817f,0.62529f,0.63238f,
+    0.63943f,0.64643f,0.65339f,0.66031f,0.66717f,0.67399f,0.68075f,0.68746f,0.69412f,0.70072f,
+    0.70726f,0.71375f,0.72017f,0.72653f,0.73282f,0.73905f,0.74522f,0.75131f,0.75734f,0.76330f,
+    0.76918f,0.77500f,0.78074f,0.78640f,0.79199f,0.79751f,0.80295f,0.80831f,0.81359f,0.81880f,
+    0.82393f,0.82898f,0.83394f,0.83883f,0.84364f,0.84836f,0.85301f,0.85758f,0.86206f,0.86646f,
+    0.87078f,0.87502f,0.87918f,0.88326f,0.88726f,0.89118f,0.89501f,0.89877f,0.90245f,0.90605f,
+    0.90957f,0.91301f,0.91638f,0.91966f,0.92288f,0.92601f,0.92908f,0.93206f,0.93498f,0.93782f,
+    0.94059f,0.94329f,0.94592f,0.94848f,0.95097f,0.95339f,0.95575f,0.95804f,0.96027f,0.96244f,
+    0.96454f,0.96658f,0.96856f,0.97049f,0.97235f,0.97416f,0.97591f,0.97760f,0.97924f,0.98083f,
+    0.98237f,0.98386f,0.98530f,0.98669f,0.98803f,0.98933f,0.99058f,0.99179f,0.99295f,0.99408f,
+    0.99516f,0.99620f,0.99721f,0.99817f,0.99910f,1.00000f
+  },
+  {
+    0.00000f,0.00000f,0.00000f,0.00001f,0.00002f,0.00005f,0.00008f,0.00012f,0.00019f,0.00026f,
+    0.00036f,0.00048f,0.00063f,0.00080f,0.00099f,0.00122f,0.00148f,0.00178f,0.00211f,0.00249f,
+    0.00290f,0.00335f,0.00386f,0.00440f,0.00500f,0.00565f,0.00636f,0.00711f,0.00793f,0.00881f,
+    0.00975f,0.01075f,0.01182f,0.01295f,0.01416f,0.01543f,0.01678f,0.01821f,0.01971f,0.02129f,
+    0.02295f,0.02469f,0.02652f,0.02843f,0.03043f,0.03252f,0.03469f,0.03696f,0.03933f,0.04178f,
+    0.04433f,0.04698f,0.04973f,0.05258f,0.05552f,0.05857f,0.06172f,0.06498f,0.06834f,0.07180f,
+    0.07537f,0.07905f,0.08283f,0.08672f,0.09072f,0.09483f,0.09905f,0.10337f,0.10781f,0.11236f,
+    0.11701f,0.12178f,0.12665f,0.13163f,0.13673f,0.14193f,0.14724f,0.15265f,0.15817f,0.16380f,
+    0.16954f,0.17538f,0.18132f,0.18737f,0.19351f,0.19976f,0.20610f,0.21255f,0.21908f,0.22572f,
+    0.23244f,0.23926f,0.24616f,0.25316f,0.26023f,0.26739f,0.27464f,0.28196f,0.28935f,0.29683f,
+    0.30437f,0.31198f,0.31966f,0.32740f,0.33521f,0.34307f,0.35099f,0.35896f,0.36699f,0.37506f,
+    0.38317f,0.39133f,0.39952f,0.40775f,0.41601f,0.42429f,0.43261f,0.44094f,0.44929f,0.45766f,
+    0.46604f,0.47443f,0.48283f,0.49122f,0.49962f,0.50801f,0.51639f,0.52476f,0.53312f,0.54146f,
+    0.54978f,0.55807f,0.56633f,0.57457f,0.58277f,0.59093f,0.59905f,0.60713f,0.61516f,0.62314f,
+    0.63107f,0.63895f,0.64676f,0.65452f,0.66221f,0.66984f,0.67739f,0.68488f,0.69229f,0.69963f,
+    0.70689f,0.71407f,0.72117f,0.72818f,0.73511f,0.74195f,0.74870f,0.75536f,0.76192f,0.76839f,
+    0.77477f,0.78105f,0.78723f,0.79331f,0.79930f,0.80518f,0.81096f,0.81664f,0.82221f,0.82768f,
+    0.83305f,0.83832f,0.84347f,0.84853f,0.85348f,0.85832f,0.86306f,0.86770f,0.87223f,0.87666f,
+    0.88098f,0.88521f,0.88933f,0.89334f,0.89726f,0.90108f,0.90480f,0.90842f,0.91194f,0.91537f,
+    0.91870f,0.92193f,0.92508f,0.92813f,0.93109f,0.93396f,0.93675f,0.93945f,0.94206f,0.94459f,
+    0.94704f,0.94941f,0.95169f,0.95391f,0.95604f,0.95810f,0.96009f,0.96201f,0.96386f,0.96564f,
+    0.96735f,0.96900f,0.97059f,0.97212f,0.97358f,0.97499f,0.97634f,0.97764f,0.97888f,0.98007f,
+    0.98122f,0.98231f,0.98336f,0.98436f,0.98531f,0.98623f,0.98710f,0.98793f,0.98873f,0.98949f,
+    0.99021f,0.99090f,0.99155f,0.99218f,0.99277f,0.99333f,0.99387f,0.99437f,0.99486f,0.99531f,
+    0.99575f,0.99616f,0.99654f,0.99691f,0.99726f,0.99759f,0.99790f,0.99819f,0.99847f,0.99873f,
+    0.99897f,0.99920f,0.99942f,0.99963f,0.99982f,1.00000f
+  },
+  {
+    0.00000f,0.00000f,0.00000f,0.00001f,0.00003f,0.00006f,0.00010f,0.00017f,0.00025f,0.00035f,
+    0.00048f,0.00064f,0.00083f,0.00106f,0.00132f,0.00163f,0.00197f,0.00237f,0.00281f,0.00330f,
+    0.00385f,0.00446f,0.00513f,0.00585f,0.00665f,0.00751f,0.00845f,0.00945f,0.01054f,0.01170f,
+    0.01295f,0.01428f,0.01569f,0.01719f,0.01879f,0.02048f,0.02227f,0.02415f,0.02614f,0.02822f,
+    0.03042f,0.03272f,0.03513f,0.03765f,0.04028f,0.04303f,0.04589f,0.04887f,0.05198f,0.05520f,
+    0.05855f,0.06202f,0.06561f,0.06933f,0.07318f,0.07716f,0.08127f,0.08550f,0.08987f,0.09437f,
+    0.09900f,0.10376f,0.10866f,0.11369f,0.11884f,0.12414f,0.12956f,0.13512f,0.14080f,0.14662f,
+    0.15257f,0.15865f,0.16485f,0.17118f,0.17764f,0.18423f,0.19093f,0.19776f,0.20471f,0.21177f,
+    0.21895f,0.22625f,0.23365f,0.24117f,0.24879f,0.25652f,0.26435f,0.27228f,0.28030f,0.28842f,
+    0.29662f,0.30492f,0.31329f,0.32175f,0.33028f,0.33889f,0.34756f,0.35630f,0.36510f,0.37396f,
+    0.38287f,0.39183f,0.40084f,0.40989f,0.41897f,0.42809f,0.43723f,0.44640f,0.45559f,0.46479f,
+    0.47401f,0.48323f,0.49245f,0.50167f,0.51088f,0.52008f,0.52927f,0.53843f,0.54757f,0.55668f,
+    0.56575f,0.57479f,0.58379f,0.59274f,0.60164f,0.61048f,0.61927f,0.62799f,0.63665f,0.64524f,
+    0.65376f,0.66220f,0.67056f,0.67883f,0.68702f,0.69511f,0.70312f,0.71103f,0.71884f,0.72655f,
+    0.73415f,0.74165f,0.74904f,0.75632f,0.76348f,0.77053f,0.77747f,0.78428f,0.79098f,0.79756f,
+    0.80401f,0.81035f,0.81655f,0.82264f,0.82859f,0.83443f,0.84013f,0.84571f,0.85117f,0.85649f,
+    0.86169f,0.86677f,0.87172f,0.87654f,0.88124f,0.88581f,0.89026f,0.89459f,0.89880f,0.90289f,
+    0.90686f,0.91071f,0.91445f,0.91807f,0.92157f,0.92497f,0.92826f,0.93143f,0.93450f,0.93747f,
+    0.94034f,0.94310f,0.94577f,0.94833f,0.95081f,0.95319f,0.95548f,0.95768f,0.95980f,0.96183f,
+    0.96378f,0.96565f,0.96744f,0.96916f,0.97081f,0.97238f,0.97388f,0.97532f,0.97669f,0.97801f,
+    0.97926f,0.98045f,0.98158f,0.98266f,0.98369f,0.98467f,0.98560f,0.98648f,0.98732f,0.98811f,
+    0.98886f,0.98958f,0.99025f,0.99089f,0.99149f,0.99206f,0.99260f,0.99311f,0.99359f,0.99404f,
+    0.99446f,0.99486f,0.99523f,0.99559f,0.99592f,0.99623f,0.99652f,0.99679f,0.99705f,0.99729f,
+    0.99751f,0.99772f,0.99792f,0.99810f,0.99827f,0.99843f,0.99857f,0.99871f,0.99884f,0.99896f,
+    0.99907f,0.99917f,0.99926f,0.99935f,0.99943f,0.99951f,0.99958f,0.99964f,0.99970f,0.99975f,
+    0.99980f,0.99985f,0.99989f,0.99993f,0.99997f,1.00000f
+  }
+};
+
+#define gld_CalcLightLevel(lightlevel) (lighttable[1][max(min((lightlevel),255),0)])
 
 // ==========================================================================
 //                                                               VIEW GLOBALS
@@ -80,18 +300,18 @@ boolean drawsky = true;
 #define FIELDOFVIEW ANGLE_90
 #define ABS(x) ((x) < 0 ? -(x) : (x))
 
-static angle_t gl_clipangle;
+static angle_t gr_clipangle;
 
 // The viewangletox[viewangle + FINEANGLES/4] lookup
 // maps the visible view angles to screen X coordinates,
 // flattening the arc to a flat projection plane.
 // There will be many angles mapped to the same X.
-static INT32 gl_viewangletox[FINEANGLES/2];
+static INT32 gr_viewangletox[FINEANGLES/2];
 
 // The xtoviewangleangle[] table maps a screen pixel
 // to the lowest viewangle that maps back to x ranges
 // from clipangle to -clipangle.
-static angle_t gl_xtoviewangle[MAXVIDWIDTH+1];
+static angle_t gr_xtoviewangle[MAXVIDWIDTH+1];
 
 // ==========================================================================
 //                                                                    GLOBALS
@@ -109,51 +329,24 @@ static angle_t gl_xtoviewangle[MAXVIDWIDTH+1];
 //#define NOCRAPPYMLOOK
 
 // base values set at SetViewSize
-static float gl_basecentery;
+static float gr_basecentery;
 
-float gl_baseviewwindowy, gl_basewindowcentery;
-float gl_viewwidth, gl_viewheight; // viewport clipping boundaries (screen coords)
-float gl_viewwindowx;
+float gr_baseviewwindowy, gr_basewindowcentery;
+float gr_viewwidth, gr_viewheight; // viewport clipping boundaries (screen coords)
+float gr_viewwindowx;
 
-static float gl_centerx, gl_centery;
-static float gl_viewwindowy; // top left corner of view window
-static float gl_windowcenterx; // center of view window, for projection
-static float gl_windowcentery;
+static float gr_centerx, gr_centery;
+static float gr_viewwindowy; // top left corner of view window
+static float gr_windowcenterx; // center of view window, for projection
+static float gr_windowcentery;
 
-static float gl_pspritexscale, gl_pspriteyscale;
+static float gr_pspritexscale, gr_pspriteyscale;
 
-static seg_t *gl_curline;
-static side_t *gl_sidedef;
-static line_t *gl_linedef;
-static sector_t *gl_frontsector;
-static sector_t *gl_backsector;
-
-// Render stats
-ps_metric_t ps_hw_skyboxtime = {0};
-ps_metric_t ps_hw_nodesorttime = {0};
-ps_metric_t ps_hw_nodedrawtime = {0};
-ps_metric_t ps_hw_spritesorttime = {0};
-ps_metric_t ps_hw_spritedrawtime = {0};
-
-// Render stats for batching
-ps_metric_t ps_hw_numpolys = {0};
-ps_metric_t ps_hw_numverts = {0};
-ps_metric_t ps_hw_numcalls = {0};
-ps_metric_t ps_hw_numshaders = {0};
-ps_metric_t ps_hw_numtextures = {0};
-ps_metric_t ps_hw_numpolyflags = {0};
-ps_metric_t ps_hw_numcolors = {0};
-ps_metric_t ps_hw_batchsorttime = {0};
-ps_metric_t ps_hw_batchdrawtime = {0};
-
-boolean gl_init = false;
-boolean gl_maploaded = false;
-boolean gl_sessioncommandsadded = false;
-// false if shaders have not been initialized yet, or if shaders are not available
-boolean gl_shadersavailable = false;
-
-// Whether the internal state is set to palette rendering or not.
-static boolean gl_palette_rendering_state = false;
+static seg_t *gr_curline;
+static side_t *gr_sidedef;
+static line_t *gr_linedef;
+static sector_t *gr_frontsector;
+static sector_t *gr_backsector;
 
 // --------------------------------------------------------------------------
 //                                              STUFF FOR THE PROJECTION CODE
@@ -165,198 +358,158 @@ FTransform atransform;
 static fixed_t dup_viewx, dup_viewy, dup_viewz;
 static angle_t dup_viewangle;
 
-static float gl_viewx, gl_viewy, gl_viewz;
-static float gl_viewsin, gl_viewcos;
+static float gr_viewx, gr_viewy, gr_viewz;
+static float gr_viewsin, gr_viewcos;
 
 // Maybe not necessary with the new T&L code (needs to be checked!)
-static float gl_viewludsin, gl_viewludcos; // look up down kik test
-static float gl_fovlud;
-
-static angle_t gl_aimingangle;
-static void HWR_SetTransformAiming(FTransform *trans, player_t *player, boolean skybox);
+static float gr_viewludsin, gr_viewludcos; // look up down kik test
+static float gr_fovlud;
 
 // ==========================================================================
-// Lighting
+//                                    LIGHT stuffs
 // ==========================================================================
 
-// Returns true if shaders can be used.
-boolean HWR_UseShader(void)
+static UINT8 lightleveltonumlut[256];
+
+// added to SRB2's sector lightlevel to make things a bit brighter (sprites/walls/planes)
+FUNCMATH UINT8 LightLevelToLum(INT32 l)
 {
-	return (cv_glshaders.value && gl_shadersavailable);
+	return (UINT8)(255*gld_CalcLightLevel(l));
 }
 
-void HWR_Lighting(FSurfaceInfo *Surface, INT32 light_level, extracolormap_t *colormap)
+static inline void InitLumLut(void)
 {
-	RGBA_t poly_color, tint_color, fade_color;
-
-	poly_color.rgba = 0xFFFFFFFF;
-	tint_color.rgba = (colormap != NULL) ? (UINT32)colormap->rgba : GL_DEFAULTMIX;
-	fade_color.rgba = (colormap != NULL) ? (UINT32)colormap->fadergba : GL_DEFAULTFOG;
-
-	// Crappy backup coloring if you can't do shaders
-	if (!HWR_UseShader())
+	INT32 i, k = 0;
+	for (i = 0; i < 256; i++)
 	{
-		// be careful, this may get negative for high lightlevel values.
-		float tint_alpha, fade_alpha;
-		float red, green, blue;
+		if (i > 128)
+			k += 2;
+		else
+			k = 1;
+		lightleveltonumlut[i] = (UINT8)(k);
+	}
+}
 
-		red = (float)poly_color.s.red;
-		green = (float)poly_color.s.green;
-		blue = (float)poly_color.s.blue;
+//#define FOGFACTOR 300 //was 600 >> Covered by cv_grfogdensity
+#define NORMALFOG 0x00000000
+#define FADEFOG 0x19000000
+#define CALCFOGDENSITY(x) ((float)((5220.0f*(1.0f/((x)/41.0f+1.0f)))-(5220.0f*(1.0f/(255.0f/41.0f+1.0f))))) // Approximate fog calculation based off of software walls
+#define CALCFOGDENSITYFLOOR(x) ((float)((40227.0f*(1.0f/((x)/11.0f+1.0f)))-(40227.0f*(1.0f/(255.0f/11.0f+1.0f))))) // Approximate fog calculation based off of software floors
+#define CALCLIGHT(x,y) ((float)(x)*((y)/255.0f))
+UINT32 HWR_Lighting(INT32 light, UINT32 color, UINT32 fadecolor, boolean fogblockpoly, boolean plane)
+{
+	RGBA_t realcolor, fogcolor, surfcolor;
+	INT32 alpha, fogalpha;
 
-		// 48 is just an arbritrary value that looked relatively okay.
-		tint_alpha = (float)(sqrt(tint_color.s.alpha) * 48) / 255.0f;
+	(void)fogblockpoly;
 
-		// 8 is roughly the brightness of the "close" color in Software, and 16 the brightness of the "far" color.
-		// 8 is too bright for dark levels, and 16 is too dark for bright levels.
-		// 12 is the compromise value. It doesn't look especially good anywhere, but it's the most balanced.
-		// (Also, as far as I can tell, fade_color's alpha is actually not used in Software, so we only use light level.)
-		fade_alpha = (float)(sqrt(255-light_level) * 12) / 255.0f;
+	// Don't go out of bounds
+	if (light < 0)
+		light = 0;
+	else if (light > 255)
+		light = 255;
 
-		// Clamp the alpha values
-		tint_alpha = min(max(tint_alpha, 0.0f), 1.0f);
-		fade_alpha = min(max(fade_alpha, 0.0f), 1.0f);
+	realcolor.rgba = color;
+	fogcolor.rgba = fadecolor;
 
-		red = (tint_color.s.red * tint_alpha) + (red * (1.0f - tint_alpha));
-		green = (tint_color.s.green * tint_alpha) + (green * (1.0f - tint_alpha));
-		blue = (tint_color.s.blue * tint_alpha) + (blue * (1.0f - tint_alpha));
+	alpha = (realcolor.s.alpha*255)/25;
+	fogalpha = (fogcolor.s.alpha*255)/25;
 
-		red = (fade_color.s.red * fade_alpha) + (red * (1.0f - fade_alpha));
-		green = (fade_color.s.green * fade_alpha) + (green * (1.0f - fade_alpha));
-		blue = (fade_color.s.blue * fade_alpha) + (blue * (1.0f - fade_alpha));
+	if (cv_grfog.value && cv_grsoftwarefog.value) // Only do this when fog is on, software fog mode is on, and the poly is not from a fog block
+	{
+		// Modulate the colors by alpha.
+		realcolor.s.red = (UINT8)(CALCLIGHT(alpha,realcolor.s.red));
+		realcolor.s.green = (UINT8)(CALCLIGHT(alpha,realcolor.s.green));
+		realcolor.s.blue = (UINT8)(CALCLIGHT(alpha,realcolor.s.blue));
 
-		poly_color.s.red = (UINT8)red;
-		poly_color.s.green = (UINT8)green;
-		poly_color.s.blue = (UINT8)blue;
+		// Set the surface colors and further modulate the colors by light.
+		surfcolor.s.red = (UINT8)(CALCLIGHT((0xFF-alpha),255)+CALCLIGHT(realcolor.s.red,255));
+		surfcolor.s.green = (UINT8)(CALCLIGHT((0xFF-alpha),255)+CALCLIGHT(realcolor.s.green,255));
+		surfcolor.s.blue = (UINT8)(CALCLIGHT((0xFF-alpha),255)+CALCLIGHT(realcolor.s.blue,255));
+		surfcolor.s.alpha = 0xFF;
+
+		// Modulate the colors by alpha.
+		fogcolor.s.red = (UINT8)(CALCLIGHT(fogalpha,fogcolor.s.red));
+		fogcolor.s.green = (UINT8)(CALCLIGHT(fogalpha,fogcolor.s.green));
+		fogcolor.s.blue = (UINT8)(CALCLIGHT(fogalpha,fogcolor.s.blue));
+	}
+	else
+	{
+		// Modulate the colors by alpha.
+		realcolor.s.red = (UINT8)(CALCLIGHT(alpha,realcolor.s.red));
+		realcolor.s.green = (UINT8)(CALCLIGHT(alpha,realcolor.s.green));
+		realcolor.s.blue = (UINT8)(CALCLIGHT(alpha,realcolor.s.blue));
+
+		// Set the surface colors and further modulate the colors by light.
+		surfcolor.s.red = (UINT8)(CALCLIGHT((0xFF-alpha),light)+CALCLIGHT(realcolor.s.red,light));
+		surfcolor.s.green = (UINT8)(CALCLIGHT((0xFF-alpha),light)+CALCLIGHT(realcolor.s.green,light));
+		surfcolor.s.blue = (UINT8)(CALCLIGHT((0xFF-alpha),light)+CALCLIGHT(realcolor.s.blue,light));
+
+		// Modulate the colors by alpha.
+		fogcolor.s.red = (UINT8)(CALCLIGHT(fogalpha,fogcolor.s.red));
+		fogcolor.s.green = (UINT8)(CALCLIGHT(fogalpha,fogcolor.s.green));
+		fogcolor.s.blue = (UINT8)(CALCLIGHT(fogalpha,fogcolor.s.blue));
+
+		// Set the surface colors and further modulate the colors by light.
+		surfcolor.s.red = surfcolor.s.red+((UINT8)(CALCLIGHT((0xFF-fogalpha),(255-light))+CALCLIGHT(fogcolor.s.red,(255-light))));
+		surfcolor.s.green = surfcolor.s.green+((UINT8)(CALCLIGHT((0xFF-fogalpha),(255-light))+CALCLIGHT(fogcolor.s.green,(255-light))));
+		surfcolor.s.blue = surfcolor.s.blue+((UINT8)(CALCLIGHT((0xFF-fogalpha),(255-light))+CALCLIGHT(fogcolor.s.blue,(255-light))));
+		surfcolor.s.alpha = 0xFF;
 	}
 
-	// Clamp the light level, since it can sometimes go out of the 0-255 range from animations
-	light_level = min(max(light_level, 0), 255);
+	if(cv_grfog.value)
+	{
+		if (cv_grsoftwarefog.value)
+		{
+			fogcolor.s.red = (UINT8)((CALCLIGHT(fogcolor.s.red,(255-light)))+(CALCLIGHT(realcolor.s.red,light)));
+			fogcolor.s.green = (UINT8)((CALCLIGHT(fogcolor.s.green,(255-light)))+(CALCLIGHT(realcolor.s.green,light)));
+			fogcolor.s.blue = (UINT8)((CALCLIGHT(fogcolor.s.blue,(255-light)))+(CALCLIGHT(realcolor.s.blue,light)));
 
-	Surface->PolyColor.rgba = poly_color.rgba;
-	Surface->TintColor.rgba = tint_color.rgba;
-	Surface->FadeColor.rgba = fade_color.rgba;
-	Surface->LightInfo.light_level = light_level;
-	Surface->LightInfo.fade_start = (colormap != NULL) ? colormap->fadestart : 0;
-	Surface->LightInfo.fade_end = (colormap != NULL) ? colormap->fadeend : 31;
+			// Set the fog options.
+			if (cv_grsoftwarefog.value == 1 && plane) // With floors, software draws them way darker for their distance
+				HWD.pfnSetSpecialState(HWD_SET_FOG_DENSITY, (INT32)(CALCFOGDENSITYFLOOR(light)));
+			else // everything else is drawn like walls
+				HWD.pfnSetSpecialState(HWD_SET_FOG_DENSITY, (INT32)(CALCFOGDENSITY(light)));
+		}
+		else
+		{
+			fogcolor.s.red = (UINT8)((CALCLIGHT(fogcolor.s.red,(255-light)))+(CALCLIGHT(realcolor.s.red,light)));
+			fogcolor.s.green = (UINT8)((CALCLIGHT(fogcolor.s.green,(255-light)))+(CALCLIGHT(realcolor.s.green,light)));
+			fogcolor.s.blue = (UINT8)((CALCLIGHT(fogcolor.s.blue,(255-light)))+(CALCLIGHT(realcolor.s.blue,light)));
 
-	if (HWR_ShouldUsePaletteRendering())
-		Surface->LightTableId = HWR_GetLightTableID(colormap);
-	else
-		Surface->LightTableId = 0;
+			fogalpha = (UINT8)((CALCLIGHT(fogalpha,(255-light)))+(CALCLIGHT(alpha,light)));
+
+			// Set the fog options.
+			light = (UINT8)(CALCLIGHT(light,(255-fogalpha)));
+			HWD.pfnSetSpecialState(HWD_SET_FOG_DENSITY, (INT32)(cv_grfogdensity.value-(cv_grfogdensity.value*(float)light/255.0f)));
+		}
+
+		HWD.pfnSetSpecialState(HWD_SET_FOG_COLOR, (fogcolor.s.red*0x10000)+(fogcolor.s.green*0x100)+fogcolor.s.blue);
+		HWD.pfnSetSpecialState(HWD_SET_FOG_MODE, 1);
+	}
+	return surfcolor.rgba;
 }
 
-UINT8 HWR_FogBlockAlpha(INT32 light, extracolormap_t *colormap) // Let's see if this can work
+
+static UINT8 HWR_FogBlockAlpha(INT32 light, UINT32 color) // Let's see if this can work
 {
 	RGBA_t realcolor, surfcolor;
 	INT32 alpha;
 
-	realcolor.rgba = (colormap != NULL) ? colormap->rgba : GL_DEFAULTMIX;
+	// Don't go out of bounds
+	if (light < 0)
+		light = 0;
+	else if (light > 255)
+		light = 255;
 
-	if (cv_glshaders.value && gl_shadersavailable)
-	{
-		surfcolor.s.alpha = (255 - light);
-	}
-	else
-	{
-		light = light - (255 - light);
+	realcolor.rgba = color;
 
-		// Don't go out of bounds
-		if (light < 0)
-			light = 0;
-		else if (light > 255)
-			light = 255;
+	alpha = (realcolor.s.alpha*255)/25;
 
-		alpha = (realcolor.s.alpha*255)/25;
-
-		// at 255 brightness, alpha is between 0 and 127, at 0 brightness alpha will always be 255
-		surfcolor.s.alpha = (alpha*light) / (2*256) + 255-light;
-	}
+	// at 255 brightness, alpha is between 0 and 127, at 0 brightness alpha will always be 255
+	surfcolor.s.alpha = (alpha*light)/(2*256)+255-light;
 
 	return surfcolor.s.alpha;
-}
-
-static FUINT HWR_CalcWallLight(FUINT lightnum, fixed_t v1x, fixed_t v1y, fixed_t v2x, fixed_t v2y)
-{
-	INT16 finallight = lightnum;
-
-	if (cv_glfakecontrast.value != 0)
-	{
-		const UINT8 contrast = 8;
-		fixed_t extralight = 0;
-
-		if (cv_glfakecontrast.value == 2) // Smooth setting
-		{
-			extralight = (-(contrast<<FRACBITS) +
-			FixedDiv(AngleFixed(R_PointToAngle2(0, 0,
-				abs(v1x - v2x),
-				abs(v1y - v2y))), 90<<FRACBITS)
-			* (contrast * 2)) >> FRACBITS;
-		}
-		else
-		{
-			if (v1y == v2y)
-				extralight = -contrast;
-			else if (v1x == v2x)
-				extralight = contrast;
-		}
-
-		if (extralight != 0)
-		{
-			finallight += extralight;
-
-			if (finallight < 0)
-				finallight = 0;
-			if (finallight > 255)
-				finallight = 255;
-		}
-	}
-
-	return (FUINT)finallight;
-}
-
-static FUINT HWR_CalcSlopeLight(FUINT lightnum, angle_t dir, fixed_t delta)
-{
-	INT16 finallight = lightnum;
-
-	if (cv_glfakecontrast.value != 0 && cv_glslopecontrast.value != 0)
-	{
-		const UINT8 contrast = 8;
-		fixed_t extralight = 0;
-
-		if (cv_glfakecontrast.value == 2) // Smooth setting
-		{
-			fixed_t dirmul = abs(FixedDiv(AngleFixed(dir) - (180<<FRACBITS), 180<<FRACBITS));
-
-			extralight = -(contrast<<FRACBITS) + (dirmul * (contrast * 2));
-
-			extralight = FixedMul(extralight, delta*4) >> FRACBITS;
-		}
-		else
-		{
-			dir = ((dir + ANGLE_45) / ANGLE_90) * ANGLE_90;
-
-			if (dir == ANGLE_180)
-				extralight = -contrast;
-			else if (dir == 0)
-				extralight = contrast;
-
-			if (delta >= FRACUNIT/2)
-				extralight *= 2;
-		}
-
-		if (extralight != 0)
-		{
-			finallight += extralight;
-
-			if (finallight < 0)
-				finallight = 0;
-			if (finallight > 255)
-				finallight = 255;
-		}
-	}
-
-	return (FUINT)finallight;
 }
 
 // ==========================================================================
@@ -368,7 +521,8 @@ static FUINT HWR_CalcSlopeLight(FUINT lightnum, angle_t dir, fixed_t delta)
 // -----------------+
 // HWR_RenderPlane  : Render a floor or ceiling convex polygon
 // -----------------+
-static void HWR_RenderPlane(subsector_t *subsector, extrasubsector_t *xsub, boolean isceiling, fixed_t fixedheight, FBITFIELD PolyFlags, INT32 lightlevel, levelflat_t *levelflat, sector_t *FOFsector, UINT8 alpha, extracolormap_t *planecolormap)
+static void HWR_RenderPlane(sector_t *sector, extrasubsector_t *xsub, boolean isceiling, fixed_t fixedheight,
+                           FBITFIELD PolyFlags, INT32 lightlevel, lumpnum_t lumpnum, sector_t *FOFsector, UINT8 alpha, boolean fogplane, extracolormap_t *planecolormap)
 {
 	polyvertex_t *  pv;
 	float           height; //constant y for all points on the convex flat polygon
@@ -376,24 +530,27 @@ static void HWR_RenderPlane(subsector_t *subsector, extrasubsector_t *xsub, bool
 	INT32             nrPlaneVerts;   //verts original define of convex flat polygon
 	INT32             i;
 	float           flatxref,flatyref;
-	float fflatwidth = 64.0f, fflatheight = 64.0f;
-	INT32 flatflag = 63;
-	boolean texflat = false;
-	float scrollx = 0.0f, scrolly = 0.0f, anglef = 0.0f;
+	float fflatsize;
+	INT32 flatflag;
+	size_t len;
+	float scrollx = 0.0f, scrolly = 0.0f;
 	angle_t angle = 0;
 	FSurfaceInfo    Surf;
-	float tempxsow, tempytow;
+	fixed_t tempxsow, tempytow;
+#ifdef ESLOPE
 	pslope_t *slope = NULL;
+#endif
 
 	static FOutVector *planeVerts = NULL;
 	static UINT16 numAllocedPlaneVerts = 0;
 
-	INT32 shader = -1;
+	(void)sector; ///@TODO remove shitty unused variable
 
 	// no convex poly were generated for this subsector
 	if (!xsub->planepoly)
 		return;
 
+#ifdef ESLOPE
 	// Get the slope pointer to simplify future code
 	if (FOFsector)
 	{
@@ -404,15 +561,16 @@ static void HWR_RenderPlane(subsector_t *subsector, extrasubsector_t *xsub, bool
 	}
 	else
 	{
-		if (gl_frontsector->f_slope && !isceiling)
-			slope = gl_frontsector->f_slope;
-		else if (gl_frontsector->c_slope && isceiling)
-			slope = gl_frontsector->c_slope;
+		if (gr_frontsector->f_slope && !isceiling)
+			slope = gr_frontsector->f_slope;
+		else if (gr_frontsector->c_slope && isceiling)
+			slope = gr_frontsector->c_slope;
 	}
 
 	// Set fixedheight to the slope's height from our viewpoint, if we have a slope
 	if (slope)
-		fixedheight = P_GetSlopeZAt(slope, viewx, viewy);
+		fixedheight = P_GetZAt(slope, viewx, viewy);
+#endif
 
 	height = FIXED_TO_FLOAT(fixedheight);
 
@@ -422,6 +580,12 @@ static void HWR_RenderPlane(subsector_t *subsector, extrasubsector_t *xsub, bool
 	if (nrPlaneVerts < 3)   //not even a triangle ?
 		return;
 
+	if (nrPlaneVerts > UINT16_MAX) // FIXME: exceeds plVerts size
+	{
+		CONS_Debug(DBG_RENDER, "polygon size of %d exceeds max value of %d vertices\n", nrPlaneVerts, UINT16_MAX);
+		return;
+	}
+
 	// Allocate plane-vertex buffer if we need to
 	if (!planeVerts || nrPlaneVerts > numAllocedPlaneVerts)
 	{
@@ -430,238 +594,194 @@ static void HWR_RenderPlane(subsector_t *subsector, extrasubsector_t *xsub, bool
 		Z_Malloc(numAllocedPlaneVerts * sizeof (FOutVector), PU_LEVEL, &planeVerts);
 	}
 
-	// set texture for polygon
-	if (levelflat != NULL)
+	len = W_LumpLength(lumpnum);
+
+	switch (len)
 	{
-		if (levelflat->type == LEVELFLAT_FLAT)
-		{
-			size_t len = W_LumpLength(levelflat->u.flat.lumpnum);
-			switch (len)
-			{
-				case 4194304: // 2048x2048 lump
-					fflatwidth = fflatheight = 2048.0f;
-					break;
-				case 1048576: // 1024x1024 lump
-					fflatwidth = fflatheight = 1024.0f;
-					break;
-				case 262144:// 512x512 lump
-					fflatwidth = fflatheight = 512.0f;
-					break;
-				case 65536: // 256x256 lump
-					fflatwidth = fflatheight = 256.0f;
-					break;
-				case 16384: // 128x128 lump
-					fflatwidth = fflatheight = 128.0f;
-					break;
-				case 1024: // 32x32 lump
-					fflatwidth = fflatheight = 32.0f;
-					break;
-				default: // 64x64 lump
-					fflatwidth = fflatheight = 64.0f;
-					break;
-			}
-			flatflag = ((INT32)fflatwidth)-1;
-		}
-		else
-		{
-			if (levelflat->type == LEVELFLAT_TEXTURE)
-			{
-				fflatwidth = textures[levelflat->u.texture.num]->width;
-				fflatheight = textures[levelflat->u.texture.num]->height;
-			}
-			else if (levelflat->type == LEVELFLAT_PATCH || levelflat->type == LEVELFLAT_PNG)
-			{
-				fflatwidth = levelflat->width;
-				fflatheight = levelflat->height;
-			}
-			texflat = true;
-		}
+		case 4194304: // 2048x2048 lump
+			fflatsize = 2048.0f;
+			flatflag = 2047;
+			break;
+		case 1048576: // 1024x1024 lump
+			fflatsize = 1024.0f;
+			flatflag = 1023;
+			break;
+		case 262144:// 512x512 lump
+			fflatsize = 512.0f;
+			flatflag = 511;
+			break;
+		case 65536: // 256x256 lump
+			fflatsize = 256.0f;
+			flatflag = 255;
+			break;
+		case 16384: // 128x128 lump
+			fflatsize = 128.0f;
+			flatflag = 127;
+			break;
+		case 1024: // 32x32 lump
+			fflatsize = 32.0f;
+			flatflag = 31;
+			break;
+		default: // 64x64 lump
+			fflatsize = 64.0f;
+			flatflag = 63;
+			break;
 	}
-	else // set no texture
-		HWR_SetCurrentTexture(NULL);
 
 	// reference point for flat texture coord for each vertex around the polygon
-	flatxref = (float)(((fixed_t)pv->x & (~flatflag)) / fflatwidth);
-	flatyref = (float)(((fixed_t)pv->y & (~flatflag)) / fflatheight);
+	flatxref = (float)(((fixed_t)pv->x & (~flatflag)) / fflatsize);
+	flatyref = (float)(((fixed_t)pv->y & (~flatflag)) / fflatsize);
 
 	// transform
+	v3d = planeVerts;
+
 	if (FOFsector != NULL)
 	{
 		if (!isceiling) // it's a floor
 		{
-			scrollx = FIXED_TO_FLOAT(FOFsector->floor_xoffs)/fflatwidth;
-			scrolly = FIXED_TO_FLOAT(FOFsector->floor_yoffs)/fflatheight;
-			angle = FOFsector->floorpic_angle;
+			scrollx = FIXED_TO_FLOAT(FOFsector->floor_xoffs)/fflatsize;
+			scrolly = FIXED_TO_FLOAT(FOFsector->floor_yoffs)/fflatsize;
+			angle = FOFsector->floorpic_angle>>ANGLETOFINESHIFT;
 		}
 		else // it's a ceiling
 		{
-			scrollx = FIXED_TO_FLOAT(FOFsector->ceiling_xoffs)/fflatwidth;
-			scrolly = FIXED_TO_FLOAT(FOFsector->ceiling_yoffs)/fflatheight;
-			angle = FOFsector->ceilingpic_angle;
+			scrollx = FIXED_TO_FLOAT(FOFsector->ceiling_xoffs)/fflatsize;
+			scrolly = FIXED_TO_FLOAT(FOFsector->ceiling_yoffs)/fflatsize;
+			angle = FOFsector->ceilingpic_angle>>ANGLETOFINESHIFT;
 		}
 	}
-	else if (gl_frontsector)
+	else if (gr_frontsector)
 	{
 		if (!isceiling) // it's a floor
 		{
-			scrollx = FIXED_TO_FLOAT(gl_frontsector->floor_xoffs)/fflatwidth;
-			scrolly = FIXED_TO_FLOAT(gl_frontsector->floor_yoffs)/fflatheight;
-			angle = gl_frontsector->floorpic_angle;
+			scrollx = FIXED_TO_FLOAT(gr_frontsector->floor_xoffs)/fflatsize;
+			scrolly = FIXED_TO_FLOAT(gr_frontsector->floor_yoffs)/fflatsize;
+			angle = gr_frontsector->floorpic_angle>>ANGLETOFINESHIFT;
 		}
 		else // it's a ceiling
 		{
-			scrollx = FIXED_TO_FLOAT(gl_frontsector->ceiling_xoffs)/fflatwidth;
-			scrolly = FIXED_TO_FLOAT(gl_frontsector->ceiling_yoffs)/fflatheight;
-			angle = gl_frontsector->ceilingpic_angle;
+			scrollx = FIXED_TO_FLOAT(gr_frontsector->ceiling_xoffs)/fflatsize;
+			scrolly = FIXED_TO_FLOAT(gr_frontsector->ceiling_yoffs)/fflatsize;
+			angle = gr_frontsector->ceilingpic_angle>>ANGLETOFINESHIFT;
 		}
 	}
 
 	if (angle) // Only needs to be done if there's an altered angle
 	{
-		tempxsow = flatxref;
-		tempytow = flatyref;
 
-		anglef = ANG2RAD(InvAngle(angle));
+		// This needs to be done so that it scrolls in a different direction after rotation like software
+		tempxsow = FLOAT_TO_FIXED(scrollx);
+		tempytow = FLOAT_TO_FIXED(scrolly);
+		scrollx = (FIXED_TO_FLOAT(FixedMul(tempxsow, FINECOSINE(angle)) - FixedMul(tempytow, FINESINE(angle))));
+		scrolly = (FIXED_TO_FLOAT(FixedMul(tempxsow, FINESINE(angle)) + FixedMul(tempytow, FINECOSINE(angle))));
 
-		flatxref = (tempxsow * cos(anglef)) - (tempytow * sin(anglef));
-		flatyref = (tempxsow * sin(anglef)) + (tempytow * cos(anglef));
+		// This needs to be done so everything aligns after rotation
+		// It would be done so that rotation is done, THEN the translation, but I couldn't get it to rotate AND scroll like software does
+		tempxsow = FLOAT_TO_FIXED(flatxref);
+		tempytow = FLOAT_TO_FIXED(flatyref);
+		flatxref = (FIXED_TO_FLOAT(FixedMul(tempxsow, FINECOSINE(angle)) - FixedMul(tempytow, FINESINE(angle))));
+		flatyref = (FIXED_TO_FLOAT(FixedMul(tempxsow, FINESINE(angle)) + FixedMul(tempytow, FINECOSINE(angle))));
 	}
 
-#define SETUP3DVERT(vert, vx, vy) {\
-		/* Hurdler: add scrolling texture on floor/ceiling */\
-		if (texflat)\
-		{\
-			vert->s = (float)((vx) / fflatwidth) + scrollx;\
-			vert->t = -(float)((vy) / fflatheight) + scrolly;\
-		}\
-		else\
-		{\
-			vert->s = (float)(((vx) / fflatwidth) - flatxref + scrollx);\
-			vert->t = (float)(flatyref - ((vy) / fflatheight) + scrolly);\
-		}\
-\
-		/* Need to rotate before translate */\
-		if (angle) /* Only needs to be done if there's an altered angle */\
-		{\
-			tempxsow = vert->s;\
-			tempytow = vert->t;\
-			vert->s = (tempxsow * cos(anglef)) - (tempytow * sin(anglef));\
-			vert->t = (tempxsow * sin(anglef)) + (tempytow * cos(anglef));\
-		}\
-\
-		vert->x = (vx);\
-		vert->y = height;\
-		vert->z = (vy);\
-\
-		if (slope)\
-		{\
-			fixedheight = P_GetSlopeZAt(slope, FLOAT_TO_FIXED((vx)), FLOAT_TO_FIXED((vy)));\
-			vert->y = FIXED_TO_FLOAT(fixedheight);\
-		}\
-}
-
-	for (i = 0, v3d = planeVerts; i < nrPlaneVerts; i++,v3d++,pv++)
-		SETUP3DVERT(v3d, pv->x, pv->y);
-
-	if (slope)
-		lightlevel = HWR_CalcSlopeLight(lightlevel, R_PointToAngle2(0, 0, slope->normal.x, slope->normal.y), abs(slope->zdelta));
-
-	HWR_Lighting(&Surf, lightlevel, planecolormap);
-
-	if (PolyFlags & (PF_Translucent|PF_Fog|PF_Additive|PF_Subtractive|PF_ReverseSubtract|PF_Multiplicative|PF_Environment))
+	for (i = 0; i < nrPlaneVerts; i++,v3d++,pv++)
 	{
-		Surf.PolyColor.s.alpha = (UINT8)alpha;
-		PolyFlags |= PF_Modulated;
-	}
-	else
-		PolyFlags |= PF_Masked|PF_Modulated;
+		// Hurdler: add scrolling texture on floor/ceiling
+		v3d->sow = (float)((pv->x / fflatsize) - flatxref + scrollx);
+		v3d->tow = (float)(flatyref - (pv->y / fflatsize) + scrolly);
 
-	if (HWR_UseShader())
-	{
-		if (PolyFlags & PF_Fog)
-			shader = SHADER_FOG;
-		else if (PolyFlags & PF_Ripple)
-			shader = SHADER_WATER;
-		else
-			shader = SHADER_FLOOR;
+		//v3d->sow = (float)(pv->x / fflatsize);
+		//v3d->tow = (float)(pv->y / fflatsize);
 
-		PolyFlags |= PF_ColorMapped;
-	}
-
-	HWR_ProcessPolygon(&Surf, planeVerts, nrPlaneVerts, PolyFlags, shader, false);
-
-	if (subsector)
-	{
-		// Horizon lines
-		FOutVector horizonpts[6];
-		float dist, vx, vy;
-		float x1, y1, xd, yd;
-		UINT8 numplanes, j;
-		vertex_t v; // For determining the closest distance from the line to the camera, to split render planes for minimum distortion;
-
-		const float renderdist = 27000.0f; // How far out to properly render the plane
-		const float farrenderdist = 32768.0f; // From here, raise plane to horizon level to fill in the line with some texture distortion
-
-		seg_t *line = &segs[subsector->firstline];
-
-		for (i = 0; i < subsector->numlines; i++, line++)
+		// Need to rotate before translate
+		if (angle) // Only needs to be done if there's an altered angle
 		{
-			if (!line->glseg && line->linedef->special == HORIZONSPECIAL && R_PointOnSegSide(dup_viewx, dup_viewy, line) == 0)
+			tempxsow = FLOAT_TO_FIXED(v3d->sow);
+			tempytow = FLOAT_TO_FIXED(v3d->tow);
+			v3d->sow = (FIXED_TO_FLOAT(FixedMul(tempxsow, FINECOSINE(angle)) - FixedMul(tempytow, FINESINE(angle))));
+			v3d->tow = (FIXED_TO_FLOAT(-FixedMul(tempxsow, FINESINE(angle)) - FixedMul(tempytow, FINECOSINE(angle))));
+		}
+
+		//v3d->sow = (float)(v3d->sow - flatxref + scrollx);
+		//v3d->tow = (float)(flatyref - v3d->tow + scrolly);
+
+		v3d->x = pv->x;
+		v3d->y = height;
+		v3d->z = pv->y;
+
+#ifdef ESLOPE
+		if (slope)
+		{
+			fixedheight = P_GetZAt(slope, FLOAT_TO_FIXED(pv->x), FLOAT_TO_FIXED(pv->y));
+			v3d->y = FIXED_TO_FLOAT(fixedheight);
+		}
+#endif
+	}
+
+	// only useful for flat coloured triangles
+	//Surf.FlatColor = 0xff804020;
+
+	// use different light tables
+	// for horizontal / vertical / diagonal
+	// note: try to get the same visual feel as the original
+	Surf.FlatColor.s.red = Surf.FlatColor.s.green =
+	Surf.FlatColor.s.blue = LightLevelToLum(lightlevel); //  Don't take from the frontsector, or the game will crash
+
+#if 0 // no colormap test
+	// colormap test
+	if (gr_frontsector)
+	{
+		sector_t *psector = gr_frontsector;
+
+#ifdef ESLOPE
+		if (slope)
+			fixedheight = P_GetZAt(slope, psector->soundorg.x, psector->soundorg.y);
+#endif
+
+		if (psector->ffloors)
+		{
+			ffloor_t *caster = psector->lightlist[R_GetPlaneLight(psector, fixedheight, false)].caster;
+			psector = caster ? &sectors[caster->secnum] : psector;
+
+			if (caster)
 			{
-				P_ClosestPointOnLine(viewx, viewy, line->linedef, &v);
-				dist = FIXED_TO_FLOAT(R_PointToDist(v.x, v.y));
-
-				x1 = ((polyvertex_t *)line->pv1)->x;
-				y1 = ((polyvertex_t *)line->pv1)->y;
-				xd = ((polyvertex_t *)line->pv2)->x - x1;
-				yd = ((polyvertex_t *)line->pv2)->y - y1;
-
-				// Based on the seg length and the distance from the line, split horizon into multiple poly sets to reduce distortion
-				dist = sqrtf((xd*xd) + (yd*yd)) / dist / 16.0f;
-				if (dist > 100.0f)
-					numplanes = 100;
-				else
-					numplanes = (UINT8)dist + 1;
-
-				for (j = 0; j < numplanes; j++)
-				{
-					// Left side
-					vx = x1 + xd * j / numplanes;
-					vy = y1 + yd * j / numplanes;
-					SETUP3DVERT((&horizonpts[1]), vx, vy);
-
-					dist = sqrtf(powf(vx - gl_viewx, 2) + powf(vy - gl_viewy, 2));
-					vx = (vx - gl_viewx) * renderdist / dist + gl_viewx;
-					vy = (vy - gl_viewy) * renderdist / dist + gl_viewy;
-					SETUP3DVERT((&horizonpts[0]), vx, vy);
-
-					// Right side
-					vx = x1 + xd * (j+1) / numplanes;
-					vy = y1 + yd * (j+1) / numplanes;
-					SETUP3DVERT((&horizonpts[2]), vx, vy);
-
-					dist = sqrtf(powf(vx - gl_viewx, 2) + powf(vy - gl_viewy, 2));
-					vx = (vx - gl_viewx) * renderdist / dist + gl_viewx;
-					vy = (vy - gl_viewy) * renderdist / dist + gl_viewy;
-					SETUP3DVERT((&horizonpts[3]), vx, vy);
-
-					// Horizon fills
-					vx = (horizonpts[0].x - gl_viewx) * farrenderdist / renderdist + gl_viewx;
-					vy = (horizonpts[0].z - gl_viewy) * farrenderdist / renderdist + gl_viewy;
-					SETUP3DVERT((&horizonpts[5]), vx, vy);
-					horizonpts[5].y = gl_viewz;
-
-					vx = (horizonpts[3].x - gl_viewx) * farrenderdist / renderdist + gl_viewx;
-					vy = (horizonpts[3].z - gl_viewy) * farrenderdist / renderdist + gl_viewy;
-					SETUP3DVERT((&horizonpts[4]), vx, vy);
-					horizonpts[4].y = gl_viewz;
-
-					// Draw
-					HWR_ProcessPolygon(&Surf, horizonpts, 6, PolyFlags, shader, true);
-				}
+				lightlevel = psector->lightlevel;
+				Surf.FlatColor.s.red = Surf.FlatColor.s.green = Surf.FlatColor.s.blue = LightLevelToLum(lightlevel);
 			}
 		}
+		if (psector->extra_colormap)
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel,psector->extra_colormap->rgba,psector->extra_colormap->fadergba, false, true);
+		else
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel,NORMALFOG,FADEFOG, false, true);
 	}
+	else
+		Surf.FlatColor.rgba = HWR_Lighting(lightlevel,NORMALFOG,FADEFOG, false, true);
+
+#endif // NOPE
+
+	if (planecolormap)
+	{
+		if (fogplane)
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel, planecolormap->rgba, planecolormap->fadergba, true, false);
+		else
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel, planecolormap->rgba, planecolormap->fadergba, false, true);
+	}
+	else
+	{
+		if (fogplane)
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel, NORMALFOG, FADEFOG, true, false);
+		else
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel, NORMALFOG, FADEFOG, false, true);
+	}
+
+	if (PolyFlags & (PF_Translucent|PF_Fog))
+	{
+		Surf.FlatColor.s.alpha = (UINT8)alpha;
+		PolyFlags |= PF_Modulated|PF_Clip;
+	}
+	else
+		PolyFlags |= PF_Masked|PF_Modulated|PF_Clip;
+
+	HWD.pfnDrawPolygon(&Surf, planeVerts, nrPlaneVerts, PolyFlags);
 
 #ifdef ALAM_LIGHTING
 	// add here code for dynamic lighting on planes
@@ -702,88 +822,19 @@ static void HWR_RenderSkyPlane(extrasubsector_t *xsub, fixed_t fixedheight)
 	v3d = planeVerts;
 	for (i = 0; i < nrPlaneVerts; i++,v3d++,pv++)
 	{
-		v3d->s = 0.0f;
-		v3d->t = 0.0f;
+		v3d->sow = 0.0f;
+		v3d->tow = 0.0f;
 		v3d->x = pv->x;
 		v3d->y = height;
 		v3d->z = pv->y;
 	}
 
-	HWD.pfnDrawPolygon(NULL, planeVerts, nrPlaneVerts, PF_Invisible|PF_NoTexture|PF_Occlude);
+	HWD.pfnDrawPolygon(NULL, planeVerts, nrPlaneVerts,
+	 PF_Clip|PF_Invisible|PF_NoTexture|PF_Occlude);
 }
 #endif //polysky
 
 #endif //doplanes
-
-FBITFIELD HWR_GetBlendModeFlag(INT32 style)
-{
-	switch (style)
-	{
-		case AST_TRANSLUCENT:
-			return PF_Translucent;
-		case AST_ADD:
-			return PF_Additive;
-		case AST_SUBTRACT:
-			return PF_Subtractive;
-		case AST_REVERSESUBTRACT:
-			return PF_ReverseSubtract;
-		case AST_MODULATE:
-			return PF_Multiplicative;
-		default:
-			return PF_Masked;
-	}
-}
-
-UINT8 HWR_GetTranstableAlpha(INT32 transtablenum)
-{
-	transtablenum = max(min(transtablenum, tr_trans90), 0);
-
-	switch (transtablenum)
-	{
-		case 0          : return 0xff;
-		case tr_trans10 : return 0xe6;
-		case tr_trans20 : return 0xcc;
-		case tr_trans30 : return 0xb3;
-		case tr_trans40 : return 0x99;
-		case tr_trans50 : return 0x80;
-		case tr_trans60 : return 0x66;
-		case tr_trans70 : return 0x4c;
-		case tr_trans80 : return 0x33;
-		case tr_trans90 : return 0x19;
-	}
-
-	return 0xff;
-}
-
-FBITFIELD HWR_SurfaceBlend(INT32 style, INT32 transtablenum, FSurfaceInfo *pSurf)
-{
-	if (!transtablenum || style <= AST_COPY || style >= AST_OVERLAY)
-	{
-		pSurf->PolyColor.s.alpha = 0xff;
-		return PF_Masked;
-	}
-
-	pSurf->PolyColor.s.alpha = HWR_GetTranstableAlpha(transtablenum);
-	return HWR_GetBlendModeFlag(style);
-}
-
-FBITFIELD HWR_TranstableToAlpha(INT32 transtablenum, FSurfaceInfo *pSurf)
-{
-	if (!transtablenum)
-	{
-		pSurf->PolyColor.s.alpha = 0x00;
-		return PF_Masked;
-	}
-
-	pSurf->PolyColor.s.alpha = HWR_GetTranstableAlpha(transtablenum);
-	return PF_Translucent;
-}
-
-static void HWR_AddTransparentWall(FOutVector *wallVerts, FSurfaceInfo *pSurf, INT32 texnum, FBITFIELD blend, boolean fogwall, INT32 lightlevel, extracolormap_t *wallcolormap);
-
-// ==========================================================================
-// Wall generation from subsector segs
-// ==========================================================================
 
 /*
    wallVerts order is :
@@ -792,23 +843,188 @@ static void HWR_AddTransparentWall(FOutVector *wallVerts, FSurfaceInfo *pSurf, I
 		|/ |
 		0--1
 */
-
-//
-// HWR_ProjectWall
-//
-static void HWR_ProjectWall(FOutVector *wallVerts, FSurfaceInfo *pSurf, FBITFIELD blendmode, INT32 lightlevel, extracolormap_t *wallcolormap)
+#ifdef WALLSPLATS
+static void HWR_DrawSegsSplats(FSurfaceInfo * pSurf)
 {
-	INT32 shader = -1;
+	FOutVector trVerts[4], *wv;
+	wallVert3D wallVerts[4];
+	wallVert3D *pwallVerts;
+	wallsplat_t *splat;
+	GLPatch_t *gpatch;
+	fixed_t i;
+	FSurfaceInfo pSurf2;
+	// seg bbox
+	fixed_t segbbox[4];
 
-	HWR_Lighting(pSurf, lightlevel, wallcolormap);
+	M_ClearBox(segbbox);
+	M_AddToBox(segbbox,
+		FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv1)->x),
+		FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv1)->y));
+	M_AddToBox(segbbox,
+		FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv2)->x),
+		FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv2)->y));
 
-	if (HWR_UseShader())
+	splat = (wallsplat_t *)gr_curline->linedef->splats;
+	for (; splat; splat = splat->next)
 	{
-		shader = SHADER_WALL;
-		blendmode |= PF_ColorMapped;
+		//BP: don't draw splat extern to this seg
+		//    this is quick fix best is explain in logboris.txt at 12-4-2000
+		if (!M_PointInBox(segbbox,splat->v1.x,splat->v1.y) && !M_PointInBox(segbbox,splat->v2.x,splat->v2.y))
+			continue;
+
+		gpatch = W_CachePatchNum(splat->patch, PU_CACHE);
+		HWR_GetPatch(gpatch);
+
+		wallVerts[0].x = wallVerts[3].x = FIXED_TO_FLOAT(splat->v1.x);
+		wallVerts[0].z = wallVerts[3].z = FIXED_TO_FLOAT(splat->v1.y);
+		wallVerts[2].x = wallVerts[1].x = FIXED_TO_FLOAT(splat->v2.x);
+		wallVerts[2].z = wallVerts[1].z = FIXED_TO_FLOAT(splat->v2.y);
+
+		i = splat->top;
+		if (splat->yoffset)
+			i += *splat->yoffset;
+
+		wallVerts[2].y = wallVerts[3].y = FIXED_TO_FLOAT(i)+(gpatch->height>>1);
+		wallVerts[0].y = wallVerts[1].y = FIXED_TO_FLOAT(i)-(gpatch->height>>1);
+
+		wallVerts[3].s = wallVerts[3].t = wallVerts[2].s = wallVerts[0].t = 0.0f;
+		wallVerts[1].s = wallVerts[1].t = wallVerts[2].t = wallVerts[0].s = 1.0f;
+
+		// transform
+		wv = trVerts;
+		pwallVerts = wallVerts;
+		for (i = 0; i < 4; i++,wv++,pwallVerts++)
+		{
+			wv->x   = pwallVerts->x;
+			wv->z = pwallVerts->z;
+			wv->y   = pwallVerts->y;
+
+			// Kalaron: TOW and SOW needed to be switched
+			wv->sow = pwallVerts->t;
+			wv->tow = pwallVerts->s;
+		}
+		M_Memcpy(&pSurf2,pSurf,sizeof (FSurfaceInfo));
+		switch (splat->flags & SPLATDRAWMODE_MASK)
+		{
+			case SPLATDRAWMODE_OPAQUE :
+				pSurf2.FlatColor.s.alpha = 0xff;
+				i = PF_Translucent;
+				break;
+			case SPLATDRAWMODE_TRANS :
+				pSurf2.FlatColor.s.alpha = 128;
+				i = PF_Translucent;
+				break;
+			case SPLATDRAWMODE_SHADE :
+				pSurf2.FlatColor.s.alpha = 0xff;
+				i = PF_Substractive;
+				break;
+		}
+
+		HWD.pfnDrawPolygon(&pSurf2, trVerts, 4, i|PF_Modulated|PF_Clip|PF_Decal);
+	}
+}
+#endif
+
+// ==========================================================================
+//                                        WALL GENERATION FROM SUBSECTOR SEGS
+// ==========================================================================
+
+
+FBITFIELD HWR_TranstableToAlpha(INT32 transtablenum, FSurfaceInfo *pSurf)
+{
+	switch (transtablenum)
+	{
+		case tr_trans10 : pSurf->FlatColor.s.alpha = 0xe6;return  PF_Translucent;
+		case tr_trans20 : pSurf->FlatColor.s.alpha = 0xcc;return  PF_Translucent;
+		case tr_trans30 : pSurf->FlatColor.s.alpha = 0xb3;return  PF_Translucent;
+		case tr_trans40 : pSurf->FlatColor.s.alpha = 0x99;return  PF_Translucent;
+		case tr_trans50 : pSurf->FlatColor.s.alpha = 0x80;return  PF_Translucent;
+		case tr_trans60 : pSurf->FlatColor.s.alpha = 0x66;return  PF_Translucent;
+		case tr_trans70 : pSurf->FlatColor.s.alpha = 0x4c;return  PF_Translucent;
+		case tr_trans80 : pSurf->FlatColor.s.alpha = 0x33;return  PF_Translucent;
+		case tr_trans90 : pSurf->FlatColor.s.alpha = 0x19;return  PF_Translucent;
+	}
+	return PF_Translucent;
+}
+
+// v1,v2 : the start & end vertices along the original wall segment, that may have been
+//         clipped so that only a visible portion of the wall seg is drawn.
+// floorheight, ceilingheight : depend on wall upper/lower/middle, comes from the sectors.
+
+static void HWR_AddTransparentWall(wallVert3D *wallVerts, FSurfaceInfo * pSurf, INT32 texnum, FBITFIELD blend, boolean fogwall, INT32 lightlevel, extracolormap_t *wallcolormap);
+
+// -----------------+
+// HWR_ProjectWall  :
+// -----------------+
+/*
+   wallVerts order is :
+		3--2
+		| /|
+		|/ |
+		0--1
+*/
+static void HWR_ProjectWall(wallVert3D   * wallVerts,
+                                    FSurfaceInfo * pSurf,
+                                    FBITFIELD blendmode, INT32 lightlevel, extracolormap_t *wallcolormap)
+{
+	FOutVector  trVerts[4];
+	FOutVector  *wv;
+
+	// transform
+	wv = trVerts;
+	// it sounds really stupid to do this conversion with the new T&L code
+	// we should directly put the right information in the right structure
+	// wallVerts3D seems ok, doesn't need FOutVector
+	// also remove the light copy
+
+	// More messy to unwrap, but it's also quicker, uses less memory.
+	wv->sow = wallVerts->s;
+	wv->tow = wallVerts->t;
+	wv->x   = wallVerts->x;
+	wv->y   = wallVerts->y;
+	wv->z   = wallVerts->z;
+	wv++; wallVerts++;
+	wv->sow = wallVerts->s;
+	wv->tow = wallVerts->t;
+	wv->x   = wallVerts->x;
+	wv->y   = wallVerts->y;
+	wv->z   = wallVerts->z;
+	wv++; wallVerts++;
+	wv->sow = wallVerts->s;
+	wv->tow = wallVerts->t;
+	wv->x   = wallVerts->x;
+	wv->y   = wallVerts->y;
+	wv->z   = wallVerts->z;
+	wv++; wallVerts++;
+	wv->sow = wallVerts->s;
+	wv->tow = wallVerts->t;
+	wv->x   = wallVerts->x;
+	wv->y   = wallVerts->y;
+	wv->z   = wallVerts->z;
+
+	if (wallcolormap)
+	{
+		pSurf->FlatColor.rgba = HWR_Lighting(lightlevel, wallcolormap->rgba, wallcolormap->fadergba, false, false);
+	}
+	else
+	{
+		pSurf->FlatColor.rgba = HWR_Lighting(lightlevel, NORMALFOG, FADEFOG, false, false);
 	}
 
-	HWR_ProcessPolygon(pSurf, wallVerts, 4, blendmode|PF_Modulated|PF_Occlude, shader, false);
+	HWD.pfnDrawPolygon(pSurf, trVerts, 4, blendmode|PF_Modulated|PF_Occlude|PF_Clip);
+
+#ifdef WALLSPLATS
+	if (gr_curline->linedef->splats && cv_splats.value)
+		HWR_DrawSegsSplats(pSurf);
+#endif
+#ifdef ALAM_LIGHTING
+	//Hurdler: TDOD: do static lighting using gr_curline->lm
+	HWR_WallLighting(trVerts);
+
+	//Hurdler: for better dynamic light in dark area, we should draw the light first
+	//         and then the wall all that with the right blending func
+	//HWD.pfnDrawPolygon(pSurf, trVerts, 4, PF_Additive|PF_Modulated|PF_Occlude|PF_Clip);
+#endif
 }
 
 // ==========================================================================
@@ -824,7 +1040,7 @@ static float HWR_ClipViewSegment(INT32 x, polyvertex_t *v1, polyvertex_t *v2)
 {
 	float num, den;
 	float v1x, v1y, v1dx, v1dy, v2dx, v2dy;
-	angle_t pclipangle = gl_xtoviewangle[x];
+	angle_t pclipangle = gr_xtoviewangle[x];
 
 	// a segment of a polygon
 	v1x  = v1->x;
@@ -844,7 +1060,7 @@ static float HWR_ClipViewSegment(INT32 x, polyvertex_t *v1, polyvertex_t *v2)
 	// calc the frac along the polygon segment,
 	//num = (v2x - v1x)*v2dy + (v1y - v2y)*v2dx;
 	//num = -v1x * v2dy + v1y * v2dx;
-	num = (gl_viewx - v1x)*v2dy + (v1y - gl_viewy)*v2dx;
+	num = (gr_viewx - v1x)*v2dy + (v1y - gr_viewy)*v2dx;
 
 	return num / den;
 }
@@ -853,7 +1069,7 @@ static float HWR_ClipViewSegment(INT32 x, polyvertex_t *v1, polyvertex_t *v2)
 //
 // HWR_SplitWall
 //
-static void HWR_SplitWall(sector_t *sector, FOutVector *wallVerts, INT32 texnum, FSurfaceInfo* Surf, INT32 cutflag, ffloor_t *pfloor, FBITFIELD polyflags)
+static void HWR_SplitWall(sector_t *sector, wallVert3D *wallVerts, INT32 texnum, FSurfaceInfo* Surf, INT32 cutflag, ffloor_t *pfloor)
 {
 	/* SoM: split up and light walls according to the
 	 lightlist. This may also include leaving out parts
@@ -863,23 +1079,24 @@ static void HWR_SplitWall(sector_t *sector, FOutVector *wallVerts, INT32 texnum,
 	float pegt, pegb, pegmul;
 	float height = 0.0f, bheight = 0.0f;
 
+#ifdef ESLOPE
 	float endrealtop, endrealbot, endtop, endbot;
 	float endpegt, endpegb, endpegmul;
 	float endheight = 0.0f, endbheight = 0.0f;
-
-	// compiler complains when P_GetSlopeZAt is used in FLOAT_TO_FIXED directly
-	// use this as a temp var to store P_GetSlopeZAt's return value each time
-	fixed_t temp;
 
 	fixed_t v1x = FLOAT_TO_FIXED(wallVerts[0].x);
 	fixed_t v1y = FLOAT_TO_FIXED(wallVerts[0].z); // not a typo
 	fixed_t v2x = FLOAT_TO_FIXED(wallVerts[1].x);
 	fixed_t v2y = FLOAT_TO_FIXED(wallVerts[1].z); // not a typo
+	// compiler complains when P_GetZAt is used in FLOAT_TO_FIXED directly
+	// use this as a temp var to store P_GetZAt's return value each time
+	fixed_t temp;
+#endif
 
-	INT32 solid, i;
+	INT32   solid, i;
 	lightlist_t *  list = sector->lightlist;
-	const UINT8 alpha = Surf->PolyColor.s.alpha;
-	FUINT lightnum = HWR_CalcWallLight(sector->lightlevel, v1x, v1y, v2x, v2y);
+	const UINT8 alpha = Surf->FlatColor.s.alpha;
+	FUINT lightnum = sector->lightlevel;
 	extracolormap_t *colormap = NULL;
 
 	realtop = top = wallVerts[3].y;
@@ -888,30 +1105,34 @@ static void HWR_SplitWall(sector_t *sector, FOutVector *wallVerts, INT32 texnum,
 	pegb = wallVerts[0].t;
 	pegmul = (pegb - pegt) / (top - bot);
 
+#ifdef ESLOPE
 	endrealtop = endtop = wallVerts[2].y;
 	endrealbot = endbot = wallVerts[1].y;
 	endpegt = wallVerts[2].t;
 	endpegb = wallVerts[1].t;
 	endpegmul = (endpegb - endpegt) / (endtop - endbot);
+#endif
 
 	for (i = 0; i < sector->numlights; i++)
 	{
-		if (endtop < endrealbot && top < realbot)
+#ifdef ESLOPE
+        if (endtop < endrealbot)
+#endif
+		if (top < realbot)
 			return;
 
+	// There's a compiler warning here if this comment isn't here because of indentation
 		if (!(list[i].flags & FF_NOSHADE))
 		{
 			if (pfloor && (pfloor->flags & FF_FOG))
 			{
 				lightnum = pfloor->master->frontsector->lightlevel;
 				colormap = pfloor->master->frontsector->extra_colormap;
-				lightnum = colormap ? lightnum : HWR_CalcWallLight(lightnum, v1x, v1y, v2x, v2y);
 			}
 			else
 			{
 				lightnum = *list[i].lightlevel;
-				colormap = *list[i].extra_colormap;
-				lightnum = colormap ? lightnum : HWR_CalcWallLight(lightnum, v1x, v1y, v2x, v2y);
+				colormap = list[i].extra_colormap;
 			}
 		}
 
@@ -932,40 +1153,80 @@ static void HWR_SplitWall(sector_t *sector, FOutVector *wallVerts, INT32 texnum,
 		else
 			solid = false;
 
-		temp = P_GetLightZAt(&list[i], v1x, v1y);
-		height = FIXED_TO_FLOAT(temp);
-		temp = P_GetLightZAt(&list[i], v2x, v2y);
-		endheight = FIXED_TO_FLOAT(temp);
+#ifdef ESLOPE
+		if (list[i].slope)
+		{
+			temp = P_GetZAt(list[i].slope, v1x, v1y);
+			height = FIXED_TO_FLOAT(temp);
+			temp = P_GetZAt(list[i].slope, v2x, v2y);
+			endheight = FIXED_TO_FLOAT(temp);
+		}
+		else
+			height = endheight = FIXED_TO_FLOAT(list[i].height);
 		if (solid)
 		{
-			temp = P_GetFFloorBottomZAt(list[i].caster, v1x, v1y);
-			bheight = FIXED_TO_FLOAT(temp);
-			temp = P_GetFFloorBottomZAt(list[i].caster, v2x, v2y);
-			endbheight = FIXED_TO_FLOAT(temp);
+			if (*list[i].caster->b_slope)
+			{
+				temp = P_GetZAt(*list[i].caster->b_slope, v1x, v1y);
+				bheight = FIXED_TO_FLOAT(temp);
+				temp = P_GetZAt(*list[i].caster->b_slope, v2x, v2y);
+				endbheight = FIXED_TO_FLOAT(temp);
+			}
+			else
+				bheight = endbheight = FIXED_TO_FLOAT(*list[i].caster->bottomheight);
 		}
+#else
+		height = FIXED_TO_FLOAT(list[i].height);
+		if (solid)
+			bheight = FIXED_TO_FLOAT(*list[i].caster->bottomheight);
+#endif
 
-		if (endheight >= endtop && height >= top)
+#ifdef ESLOPE
+		if (endheight >= endtop)
+#endif
+		if (height >= top)
 		{
 			if (solid && top > bheight)
 				top = bheight;
+#ifdef ESLOPE
 			if (solid && endtop > endbheight)
 				endtop = endbheight;
+#endif
 		}
 
+#ifdef ESLOPE
 		if (i + 1 < sector->numlights)
 		{
-			temp = P_GetLightZAt(&list[i+1], v1x, v1y);
-			bheight = FIXED_TO_FLOAT(temp);
-			temp = P_GetLightZAt(&list[i+1], v2x, v2y);
-			endbheight = FIXED_TO_FLOAT(temp);
+			if (list[i+1].slope)
+			{
+				temp = P_GetZAt(list[i+1].slope, v1x, v1y);
+				bheight = FIXED_TO_FLOAT(temp);
+				temp = P_GetZAt(list[i+1].slope, v2x, v2y);
+				endbheight = FIXED_TO_FLOAT(temp);
+			}
+			else
+				bheight = endbheight = FIXED_TO_FLOAT(list[i+1].height);
 		}
 		else
 		{
 			bheight = realbot;
 			endbheight = endrealbot;
 		}
+#else
+		if (i + 1 < sector->numlights)
+		{
+			bheight = FIXED_TO_FLOAT(list[i+1].height);
+		}
+		else
+		{
+			bheight = realbot;
+		}
+#endif
 
-		if (endbheight >= endtop && bheight >= top)
+#ifdef ESLOPE
+		if (endbheight >= endtop)
+#endif
+		if (bheight >= top)
 			continue;
 
 		//Found a break;
@@ -974,13 +1235,15 @@ static void HWR_SplitWall(sector_t *sector, FOutVector *wallVerts, INT32 texnum,
 		if (bot < realbot)
 			bot = realbot;
 
+#ifdef ESLOPE
 		endbot = endbheight;
 
 		if (endbot < endrealbot)
 			endbot = endrealbot;
+#endif
+		Surf->FlatColor.s.alpha = alpha;
 
-		Surf->PolyColor.s.alpha = alpha;
-
+#ifdef ESLOPE
 		wallVerts[3].t = pegt + ((realtop - top) * pegmul);
 		wallVerts[2].t = endpegt + ((endrealtop - endtop) * endpegmul);
 		wallVerts[0].t = pegt + ((realtop - bot) * pegmul);
@@ -991,25 +1254,39 @@ static void HWR_SplitWall(sector_t *sector, FOutVector *wallVerts, INT32 texnum,
 		wallVerts[2].y = endtop;
 		wallVerts[0].y = bot;
 		wallVerts[1].y = endbot;
+#else
+		wallVerts[3].t = wallVerts[2].t = pegt + ((realtop - top) * pegmul);
+		wallVerts[0].t = wallVerts[1].t = pegt + ((realtop - bot) * pegmul);
+
+		// set top/bottom coords
+		wallVerts[2].y = wallVerts[3].y = top;
+		wallVerts[0].y = wallVerts[1].y = bot;
+#endif
 
 		if (cutflag & FF_FOG)
-			HWR_AddTransparentWall(wallVerts, Surf, texnum, PF_Fog|PF_NoTexture|polyflags, true, lightnum, colormap);
-		else if (polyflags & (PF_Translucent|PF_Additive|PF_Subtractive|PF_ReverseSubtract|PF_Multiplicative|PF_Environment))
-			HWR_AddTransparentWall(wallVerts, Surf, texnum, polyflags, false, lightnum, colormap);
+			HWR_AddTransparentWall(wallVerts, Surf, texnum, PF_Fog|PF_NoTexture, true, lightnum, colormap);
+		else if (cutflag & FF_TRANSLUCENT)
+			HWR_AddTransparentWall(wallVerts, Surf, texnum, PF_Translucent, false, lightnum, colormap);
 		else
-			HWR_ProjectWall(wallVerts, Surf, PF_Masked|polyflags, lightnum, colormap);
+			HWR_ProjectWall(wallVerts, Surf, PF_Masked, lightnum, colormap);
 
 		top = bot;
+#ifdef ESLOPE
 		endtop = endbot;
+#endif
 	}
 
 	bot = realbot;
+#ifdef ESLOPE
 	endbot = endrealbot;
-	if (endtop <= endrealbot && top <= realbot)
+	if (endtop <= endrealbot)
+#endif
+	if (top <= realbot)
 		return;
 
-	Surf->PolyColor.s.alpha = alpha;
+	Surf->FlatColor.s.alpha = alpha;
 
+#ifdef ESLOPE
 	wallVerts[3].t = pegt + ((realtop - top) * pegmul);
 	wallVerts[2].t = endpegt + ((endrealtop - endtop) * endpegmul);
 	wallVerts[0].t = pegt + ((realtop - bot) * pegmul);
@@ -1020,79 +1297,112 @@ static void HWR_SplitWall(sector_t *sector, FOutVector *wallVerts, INT32 texnum,
 	wallVerts[2].y = endtop;
 	wallVerts[0].y = bot;
 	wallVerts[1].y = endbot;
+#else
+    wallVerts[3].t = wallVerts[2].t = pegt + ((realtop - top) * pegmul);
+    wallVerts[0].t = wallVerts[1].t = pegt + ((realtop - bot) * pegmul);
+
+    // set top/bottom coords
+    wallVerts[2].y = wallVerts[3].y = top;
+    wallVerts[0].y = wallVerts[1].y = bot;
+#endif
 
 	if (cutflag & FF_FOG)
-		HWR_AddTransparentWall(wallVerts, Surf, texnum, PF_Fog|PF_NoTexture|polyflags, true, lightnum, colormap);
-	else if (polyflags & (PF_Translucent|PF_Additive|PF_Subtractive|PF_ReverseSubtract|PF_Multiplicative|PF_Environment))
-		HWR_AddTransparentWall(wallVerts, Surf, texnum, polyflags, false, lightnum, colormap);
+		HWR_AddTransparentWall(wallVerts, Surf, texnum, PF_Fog|PF_NoTexture, true, lightnum, colormap);
+	else if (cutflag & FF_TRANSLUCENT)
+		HWR_AddTransparentWall(wallVerts, Surf, texnum, PF_Translucent, false, lightnum, colormap);
 	else
-		HWR_ProjectWall(wallVerts, Surf, PF_Masked|polyflags, lightnum, colormap);
+		HWR_ProjectWall(wallVerts, Surf, PF_Masked, lightnum, colormap);
 }
 
-// HWR_DrawSkyWall
+// HWR_DrawSkyWalls
 // Draw walls into the depth buffer so that anything behind is culled properly
-static void HWR_DrawSkyWall(FOutVector *wallVerts, FSurfaceInfo *Surf)
+static void HWR_DrawSkyWall(wallVert3D *wallVerts, FSurfaceInfo *Surf, fixed_t bottom, fixed_t top)
 {
-	HWR_SetCurrentTexture(NULL);
+	HWD.pfnSetTexture(NULL);
 	// no texture
 	wallVerts[3].t = wallVerts[2].t = 0;
 	wallVerts[0].t = wallVerts[1].t = 0;
 	wallVerts[0].s = wallVerts[3].s = 0;
 	wallVerts[2].s = wallVerts[1].s = 0;
-	// this no longer sets top/bottom coords, this should be done before caling the function
-	HWR_ProjectWall(wallVerts, Surf, PF_Invisible|PF_NoTexture, 255, NULL);
+	// set top/bottom coords
+	wallVerts[2].y = wallVerts[3].y = FIXED_TO_FLOAT(top); // No real way to find the correct height of this
+	wallVerts[0].y = wallVerts[1].y = FIXED_TO_FLOAT(bottom); // worldlow/bottom because it needs to cover up the lower thok barrier wall
+	HWR_ProjectWall(wallVerts, Surf, PF_Invisible|PF_Clip|PF_NoTexture, 255, NULL);
 	// PF_Invisible so it's not drawn into the colour buffer
 	// PF_NoTexture for no texture
 	// PF_Occlude is set in HWR_ProjectWall to draw into the depth buffer
 }
 
 //
-// HWR_ProcessSeg
+// HWR_StoreWallRange
 // A portion or all of a wall segment will be drawn, from startfrac to endfrac,
 //  where 0 is the start of the segment, 1 the end of the segment
 // Anything between means the wall segment has been clipped with solidsegs,
 //  reducing wall overdraw to a minimum
 //
+#ifdef NEWCLIP
 static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
+#else
+static void HWR_StoreWallRange(double startfrac, double endfrac)
+#endif
 {
-	FOutVector wallVerts[4];
+	wallVert3D wallVerts[4];
 	v2d_t vs, ve; // start, end vertices of 2d line (view from above)
 
 	fixed_t worldtop, worldbottom;
 	fixed_t worldhigh = 0, worldlow = 0;
+#ifdef ESLOPE
 	fixed_t worldtopslope, worldbottomslope;
 	fixed_t worldhighslope = 0, worldlowslope = 0;
 	fixed_t v1x, v1y, v2x, v2y;
+#endif
 
-	GLMapTexture_t *grTex = NULL;
+	GLTexture_t *grTex = NULL;
 	float cliplow = 0.0f, cliphigh = 0.0f;
-	INT32 gl_midtexture;
+	INT32 gr_midtexture;
 	fixed_t h, l; // 3D sides and 2s middle textures
+#ifdef ESLOPE
 	fixed_t hS, lS;
+#endif
 
 	FUINT lightnum = 0; // shut up compiler
 	extracolormap_t *colormap;
 	FSurfaceInfo Surf;
 
-	gl_sidedef = gl_curline->sidedef;
-	gl_linedef = gl_curline->linedef;
+#ifndef NEWCLIP
+	if (startfrac > endfrac)
+		return;
+#endif
 
-	vs.x = ((polyvertex_t *)gl_curline->pv1)->x;
-	vs.y = ((polyvertex_t *)gl_curline->pv1)->y;
-	ve.x = ((polyvertex_t *)gl_curline->pv2)->x;
-	ve.y = ((polyvertex_t *)gl_curline->pv2)->y;
+	gr_sidedef = gr_curline->sidedef;
+	gr_linedef = gr_curline->linedef;
 
+	vs.x = ((polyvertex_t *)gr_curline->pv1)->x;
+	vs.y = ((polyvertex_t *)gr_curline->pv1)->y;
+	ve.x = ((polyvertex_t *)gr_curline->pv2)->x;
+	ve.y = ((polyvertex_t *)gr_curline->pv2)->y;
+
+#ifdef ESLOPE
 	v1x = FLOAT_TO_FIXED(vs.x);
 	v1y = FLOAT_TO_FIXED(vs.y);
 	v2x = FLOAT_TO_FIXED(ve.x);
 	v2y = FLOAT_TO_FIXED(ve.y);
+#endif
+#ifdef ESLOPE
 
 #define SLOPEPARAMS(slope, end1, end2, normalheight) \
-	end1 = P_GetZAt(slope, v1x, v1y, normalheight); \
-	end2 = P_GetZAt(slope, v2x, v2y, normalheight);
+	if (slope) { \
+		end1 = P_GetZAt(slope, v1x, v1y); \
+		end2 = P_GetZAt(slope, v2x, v2y); \
+	} else \
+		end1 = end2 = normalheight;
 
-	SLOPEPARAMS(gl_frontsector->c_slope, worldtop,    worldtopslope,    gl_frontsector->ceilingheight)
-	SLOPEPARAMS(gl_frontsector->f_slope, worldbottom, worldbottomslope, gl_frontsector->floorheight)
+	SLOPEPARAMS(gr_frontsector->c_slope, worldtop,    worldtopslope,    gr_frontsector->ceilingheight)
+	SLOPEPARAMS(gr_frontsector->f_slope, worldbottom, worldbottomslope, gr_frontsector->floorheight)
+#else
+	worldtop    = gr_frontsector->ceilingheight;
+	worldbottom = gr_frontsector->floorheight;
+#endif
 
 	// remember vertices ordering
 	//  3--2
@@ -1105,87 +1415,111 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 	wallVerts[0].z = wallVerts[3].z = vs.y;
 	wallVerts[2].x = wallVerts[1].x = ve.x;
 	wallVerts[2].z = wallVerts[1].z = ve.y;
+	wallVerts[0].w = wallVerts[1].w = wallVerts[2].w = wallVerts[3].w = 1.0f;
 
-	// x offset the texture
 	{
-		fixed_t texturehpeg = gl_sidedef->textureoffset + gl_curline->offset;
-		cliplow = (float)texturehpeg;
-		cliphigh = (float)(texturehpeg + (gl_curline->flength*FRACUNIT));
+		// x offset the texture
+		fixed_t texturehpeg = gr_sidedef->textureoffset + gr_curline->offset;
+
+#ifndef NEWCLIP
+		// clip texture s start/end coords with solidsegs
+		if (startfrac > 0.0f && startfrac < 1.0f)
+			cliplow = (float)(texturehpeg + (gr_curline->flength*FRACUNIT) * startfrac);
+		else
+#endif
+			cliplow = (float)texturehpeg;
+
+#ifndef NEWCLIP
+		if (endfrac > 0.0f && endfrac < 1.0f)
+			cliphigh = (float)(texturehpeg + (gr_curline->flength*FRACUNIT) * endfrac);
+		else
+#endif
+			cliphigh = (float)(texturehpeg + (gr_curline->flength*FRACUNIT));
 	}
 
-	lightnum = gl_frontsector->lightlevel;
-	colormap = gl_frontsector->extra_colormap;
-	lightnum = colormap ? lightnum : HWR_CalcWallLight(lightnum, vs.x, vs.y, ve.x, ve.y);
+	lightnum = gr_frontsector->lightlevel;
+	colormap = gr_frontsector->extra_colormap;
 
-	if (gl_frontsector)
-		Surf.PolyColor.s.alpha = 255;
-
-	if (gl_backsector)
+	if (gr_frontsector)
 	{
-		INT32 gl_toptexture = 0, gl_bottomtexture = 0;
-		// two sided line
-		boolean bothceilingssky = false; // turned on if both back and front ceilings are sky
-		boolean bothfloorssky = false; // likewise, but for floors
+		Surf.FlatColor.s.alpha = 255;
+	}
 
-		SLOPEPARAMS(gl_backsector->c_slope, worldhigh, worldhighslope, gl_backsector->ceilingheight)
-		SLOPEPARAMS(gl_backsector->f_slope, worldlow,  worldlowslope,  gl_backsector->floorheight)
+	if (gr_backsector)
+	{
+		INT32 gr_toptexture, gr_bottomtexture;
+		// two sided line
+
+#ifdef ESLOPE
+		SLOPEPARAMS(gr_backsector->c_slope, worldhigh, worldhighslope, gr_backsector->ceilingheight)
+		SLOPEPARAMS(gr_backsector->f_slope, worldlow,  worldlowslope,  gr_backsector->floorheight)
+#undef SLOPEPARAMS
+#else
+		worldhigh = gr_backsector->ceilingheight;
+		worldlow  = gr_backsector->floorheight;
+#endif
 
 		// hack to allow height changes in outdoor areas
 		// This is what gets rid of the upper textures if there should be sky
-		if (gl_frontsector->ceilingpic == skyflatnum
-			&& gl_backsector->ceilingpic  == skyflatnum)
+		if (gr_frontsector->ceilingpic == skyflatnum &&
+			gr_backsector->ceilingpic  == skyflatnum)
 		{
-			bothceilingssky = true;
+			worldtop = worldhigh;
+#ifdef ESLOPE
+			worldtopslope = worldhighslope;
+#endif
 		}
 
-		// likewise, but for floors and upper textures
-		if (gl_frontsector->floorpic == skyflatnum
-			&& gl_backsector->floorpic == skyflatnum)
-		{
-			bothfloorssky = true;
-		}
-
-		if (!bothceilingssky)
-			gl_toptexture = R_GetTextureNum(gl_sidedef->toptexture);
-		if (!bothfloorssky)
-			gl_bottomtexture = R_GetTextureNum(gl_sidedef->bottomtexture);
+		gr_toptexture = R_GetTextureNum(gr_sidedef->toptexture);
+		gr_bottomtexture = R_GetTextureNum(gr_sidedef->bottomtexture);
 
 		// check TOP TEXTURE
-		if ((worldhighslope < worldtopslope || worldhigh < worldtop) && gl_toptexture)
+		if ((
+#ifdef ESLOPE
+			worldhighslope < worldtopslope ||
+#endif
+            worldhigh < worldtop
+            ) && gr_toptexture)
 		{
 			{
 				fixed_t texturevpegtop; // top
 
-				grTex = HWR_GetTexture(gl_toptexture);
+				grTex = HWR_GetTexture(gr_toptexture);
 
 				// PEGGING
-				if (gl_linedef->flags & ML_DONTPEGTOP)
+				if (gr_linedef->flags & ML_DONTPEGTOP)
 					texturevpegtop = 0;
-				else if (gl_linedef->flags & ML_EFFECT1)
-					texturevpegtop = worldhigh + textureheight[gl_sidedef->toptexture] - worldtop;
+#ifdef ESLOPE
+				else if (gr_linedef->flags & ML_EFFECT1)
+					texturevpegtop = worldhigh + textureheight[gr_sidedef->toptexture] - worldtop;
 				else
-					texturevpegtop = gl_backsector->ceilingheight + textureheight[gl_sidedef->toptexture] - gl_frontsector->ceilingheight;
+					texturevpegtop = gr_backsector->ceilingheight + textureheight[gr_sidedef->toptexture] - gr_frontsector->ceilingheight;
+#else
+                else
+                    texturevpegtop = worldhigh + textureheight[gr_sidedef->toptexture] - worldtop;
+#endif
 
-				texturevpegtop += gl_sidedef->rowoffset;
+				texturevpegtop += gr_sidedef->rowoffset;
 
 				// This is so that it doesn't overflow and screw up the wall, it doesn't need to go higher than the texture's height anyway
-				texturevpegtop %= (textures[gl_toptexture]->height)<<FRACBITS;
+				texturevpegtop %= SHORT(textures[gr_toptexture]->height)<<FRACBITS;
 
 				wallVerts[3].t = wallVerts[2].t = texturevpegtop * grTex->scaleY;
-				wallVerts[0].t = wallVerts[1].t = (texturevpegtop + gl_frontsector->ceilingheight - gl_backsector->ceilingheight) * grTex->scaleY;
+				wallVerts[0].t = wallVerts[1].t = (texturevpegtop + gr_frontsector->ceilingheight - gr_backsector->ceilingheight) * grTex->scaleY;
 				wallVerts[0].s = wallVerts[3].s = cliplow * grTex->scaleX;
 				wallVerts[2].s = wallVerts[1].s = cliphigh * grTex->scaleX;
 
+#ifdef ESLOPE
 				// Adjust t value for sloped walls
-				if (!(gl_linedef->flags & ML_EFFECT1))
+				if (!(gr_linedef->flags & ML_EFFECT1))
 				{
 					// Unskewed
-					wallVerts[3].t -= (worldtop - gl_frontsector->ceilingheight) * grTex->scaleY;
-					wallVerts[2].t -= (worldtopslope - gl_frontsector->ceilingheight) * grTex->scaleY;
-					wallVerts[0].t -= (worldhigh - gl_backsector->ceilingheight) * grTex->scaleY;
-					wallVerts[1].t -= (worldhighslope - gl_backsector->ceilingheight) * grTex->scaleY;
+					wallVerts[3].t -= (worldtop - gr_frontsector->ceilingheight) * grTex->scaleY;
+					wallVerts[2].t -= (worldtopslope - gr_frontsector->ceilingheight) * grTex->scaleY;
+					wallVerts[0].t -= (worldhigh - gr_backsector->ceilingheight) * grTex->scaleY;
+					wallVerts[1].t -= (worldhighslope - gr_backsector->ceilingheight) * grTex->scaleY;
 				}
-				else if (gl_linedef->flags & ML_DONTPEGTOP)
+				else if (gr_linedef->flags & ML_DONTPEGTOP)
 				{
 					// Skewed by top
 					wallVerts[0].t = (texturevpegtop + worldtop - worldhigh) * grTex->scaleY;
@@ -1198,60 +1532,76 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 					wallVerts[3].t = wallVerts[0].t - (worldtop - worldhigh) * grTex->scaleY;
 					wallVerts[2].t = wallVerts[1].t - (worldtopslope - worldhighslope) * grTex->scaleY;
 				}
+#endif
 			}
 
 			// set top/bottom coords
+#ifdef ESLOPE
 			wallVerts[3].y = FIXED_TO_FLOAT(worldtop);
 			wallVerts[0].y = FIXED_TO_FLOAT(worldhigh);
 			wallVerts[2].y = FIXED_TO_FLOAT(worldtopslope);
 			wallVerts[1].y = FIXED_TO_FLOAT(worldhighslope);
+#else
+			wallVerts[2].y = wallVerts[3].y = FIXED_TO_FLOAT(worldtop);
+			wallVerts[0].y = wallVerts[1].y = FIXED_TO_FLOAT(worldhigh);
+#endif
 
-			if (gl_frontsector->numlights)
-				HWR_SplitWall(gl_frontsector, wallVerts, gl_toptexture, &Surf, FF_CUTLEVEL, NULL, 0);
+			if (gr_frontsector->numlights)
+				HWR_SplitWall(gr_frontsector, wallVerts, gr_toptexture, &Surf, FF_CUTLEVEL, NULL);
 			else if (grTex->mipmap.flags & TF_TRANSPARENT)
-				HWR_AddTransparentWall(wallVerts, &Surf, gl_toptexture, PF_Environment, false, lightnum, colormap);
+				HWR_AddTransparentWall(wallVerts, &Surf, gr_toptexture, PF_Environment, false, lightnum, colormap);
 			else
 				HWR_ProjectWall(wallVerts, &Surf, PF_Masked, lightnum, colormap);
 		}
 
 		// check BOTTOM TEXTURE
 		if ((
+#ifdef ESLOPE
 			worldlowslope > worldbottomslope ||
-            worldlow > worldbottom) && gl_bottomtexture) //only if VISIBLE!!!
+#endif
+            worldlow > worldbottom) && gr_bottomtexture) //only if VISIBLE!!!
 		{
 			{
 				fixed_t texturevpegbottom = 0; // bottom
 
-				grTex = HWR_GetTexture(gl_bottomtexture);
+				grTex = HWR_GetTexture(gr_bottomtexture);
 
 				// PEGGING
-				if (!(gl_linedef->flags & ML_DONTPEGBOTTOM))
+#ifdef ESLOPE
+				if (!(gr_linedef->flags & ML_DONTPEGBOTTOM))
 					texturevpegbottom = 0;
-				else if (gl_linedef->flags & ML_EFFECT1)
+				else if (gr_linedef->flags & ML_EFFECT1)
 					texturevpegbottom = worldbottom - worldlow;
 				else
-					texturevpegbottom = gl_frontsector->floorheight - gl_backsector->floorheight;
+					texturevpegbottom = gr_frontsector->floorheight - gr_backsector->floorheight;
+#else
+				if (gr_linedef->flags & ML_DONTPEGBOTTOM)
+					texturevpegbottom = worldbottom - worldlow;
+                else
+                    texturevpegbottom = 0;
+#endif
 
-				texturevpegbottom += gl_sidedef->rowoffset;
+				texturevpegbottom += gr_sidedef->rowoffset;
 
 				// This is so that it doesn't overflow and screw up the wall, it doesn't need to go higher than the texture's height anyway
-				texturevpegbottom %= (textures[gl_bottomtexture]->height)<<FRACBITS;
+				texturevpegbottom %= SHORT(textures[gr_bottomtexture]->height)<<FRACBITS;
 
 				wallVerts[3].t = wallVerts[2].t = texturevpegbottom * grTex->scaleY;
-				wallVerts[0].t = wallVerts[1].t = (texturevpegbottom + gl_backsector->floorheight - gl_frontsector->floorheight) * grTex->scaleY;
+				wallVerts[0].t = wallVerts[1].t = (texturevpegbottom + gr_backsector->floorheight - gr_frontsector->floorheight) * grTex->scaleY;
 				wallVerts[0].s = wallVerts[3].s = cliplow * grTex->scaleX;
 				wallVerts[2].s = wallVerts[1].s = cliphigh * grTex->scaleX;
 
+#ifdef ESLOPE
 				// Adjust t value for sloped walls
-				if (!(gl_linedef->flags & ML_EFFECT1))
+				if (!(gr_linedef->flags & ML_EFFECT1))
 				{
 					// Unskewed
-					wallVerts[0].t -= (worldbottom - gl_frontsector->floorheight) * grTex->scaleY;
-					wallVerts[1].t -= (worldbottomslope - gl_frontsector->floorheight) * grTex->scaleY;
-					wallVerts[3].t -= (worldlow - gl_backsector->floorheight) * grTex->scaleY;
-					wallVerts[2].t -= (worldlowslope - gl_backsector->floorheight) * grTex->scaleY;
+					wallVerts[0].t -= (worldbottom - gr_frontsector->floorheight) * grTex->scaleY;
+					wallVerts[1].t -= (worldbottomslope - gr_frontsector->floorheight) * grTex->scaleY;
+					wallVerts[3].t -= (worldlow - gr_backsector->floorheight) * grTex->scaleY;
+					wallVerts[2].t -= (worldlowslope - gr_backsector->floorheight) * grTex->scaleY;
 				}
-				else if (gl_linedef->flags & ML_DONTPEGBOTTOM)
+				else if (gr_linedef->flags & ML_DONTPEGBOTTOM)
 				{
 					// Skewed by bottom
 					wallVerts[0].t = wallVerts[1].t = (texturevpegbottom + worldlow - worldbottom) * grTex->scaleY;
@@ -1264,24 +1614,29 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 					wallVerts[0].t = (texturevpegbottom + worldlow - worldbottom) * grTex->scaleY;
 					wallVerts[1].t = (texturevpegbottom + worldlowslope - worldbottomslope) * grTex->scaleY;
 				}
+#endif
 			}
 
 			// set top/bottom coords
+#ifdef ESLOPE
 			wallVerts[3].y = FIXED_TO_FLOAT(worldlow);
 			wallVerts[0].y = FIXED_TO_FLOAT(worldbottom);
 			wallVerts[2].y = FIXED_TO_FLOAT(worldlowslope);
 			wallVerts[1].y = FIXED_TO_FLOAT(worldbottomslope);
+#else
+			wallVerts[2].y = wallVerts[3].y = FIXED_TO_FLOAT(worldlow);
+			wallVerts[0].y = wallVerts[1].y = FIXED_TO_FLOAT(worldbottom);
+#endif
 
-			if (gl_frontsector->numlights)
-				HWR_SplitWall(gl_frontsector, wallVerts, gl_bottomtexture, &Surf, FF_CUTLEVEL, NULL, 0);
+			if (gr_frontsector->numlights)
+				HWR_SplitWall(gr_frontsector, wallVerts, gr_bottomtexture, &Surf, FF_CUTLEVEL, NULL);
 			else if (grTex->mipmap.flags & TF_TRANSPARENT)
-				HWR_AddTransparentWall(wallVerts, &Surf, gl_bottomtexture, PF_Environment, false, lightnum, colormap);
+				HWR_AddTransparentWall(wallVerts, &Surf, gr_bottomtexture, PF_Environment, false, lightnum, colormap);
 			else
 				HWR_ProjectWall(wallVerts, &Surf, PF_Masked, lightnum, colormap);
 		}
-
-		gl_midtexture = R_GetTextureNum(gl_sidedef->midtexture);
-		if (gl_midtexture)
+		gr_midtexture = R_GetTextureNum(gr_sidedef->midtexture);
+		if (gr_midtexture)
 		{
 			FBITFIELD blendmode;
 			sector_t *front, *back;
@@ -1289,19 +1644,19 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 			fixed_t     texturevpeg = 0;
 			INT32 repeats;
 
-			if (gl_linedef->frontsector->heightsec != -1)
-				front = &sectors[gl_linedef->frontsector->heightsec];
+			if (gr_linedef->frontsector->heightsec != -1)
+				front = &sectors[gr_linedef->frontsector->heightsec];
 			else
-				front = gl_linedef->frontsector;
+				front = gr_linedef->frontsector;
 
-			if (gl_linedef->backsector->heightsec != -1)
-				back = &sectors[gl_linedef->backsector->heightsec];
+			if (gr_linedef->backsector->heightsec != -1)
+				back = &sectors[gr_linedef->backsector->heightsec];
 			else
-				back = gl_linedef->backsector;
+				back = gr_linedef->backsector;
 
-			if (gl_sidedef->repeatcnt)
-				repeats = 1 + gl_sidedef->repeatcnt;
-			else if (gl_linedef->flags & ML_EFFECT5)
+			if (gr_sidedef->repeatcnt)
+				repeats = 1 + gr_sidedef->repeatcnt;
+			else if (gr_linedef->flags & ML_EFFECT5)
 			{
 				fixed_t high, low;
 
@@ -1315,8 +1670,8 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 				else
 					low = back->floorheight;
 
-				repeats = (high - low)/textureheight[gl_sidedef->midtexture];
-				if ((high-low)%textureheight[gl_sidedef->midtexture])
+				repeats = (high - low)/textureheight[gr_sidedef->midtexture];
+				if ((high-low)%textureheight[gr_sidedef->midtexture])
 					repeats++; // tile an extra time to fill the gap -- Monster Iestyn
 			}
 			else
@@ -1329,51 +1684,64 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 			// heights of the polygon, and h & l, are the final (clipped)
 			// poly coords.
 
+#ifdef POLYOBJECTS
 			// NOTE: With polyobjects, whenever you need to check the properties of the polyobject sector it belongs to,
 			// you must use the linedef's backsector to be correct
 			// From CB
-			if (gl_curline->polyseg)
+			if (gr_curline->polyseg)
 			{
 				popentop = back->ceilingheight;
 				popenbottom = back->floorheight;
 			}
 			else
+#endif
             {
+#ifdef ESLOPE
 				popentop = min(worldtop, worldhigh);
 				popenbottom = max(worldbottom, worldlow);
+#else
+				popentop = min(front->ceilingheight, back->ceilingheight);
+				popenbottom = max(front->floorheight, back->floorheight);
+#endif
 			}
 
-			if (gl_linedef->flags & ML_EFFECT2)
+#ifdef ESLOPE
+			if (gr_linedef->flags & ML_EFFECT2)
 			{
-				if (!!(gl_linedef->flags & ML_DONTPEGBOTTOM) ^ !!(gl_linedef->flags & ML_EFFECT3))
+				if (!!(gr_linedef->flags & ML_DONTPEGBOTTOM) ^ !!(gr_linedef->flags & ML_EFFECT3))
 				{
-					polybottom = max(front->floorheight, back->floorheight) + gl_sidedef->rowoffset;
-					polytop = polybottom + textureheight[gl_midtexture]*repeats;
+					polybottom = max(front->floorheight, back->floorheight) + gr_sidedef->rowoffset;
+					polytop = polybottom + textureheight[gr_midtexture]*repeats;
 				}
 				else
 				{
-					polytop = min(front->ceilingheight, back->ceilingheight) + gl_sidedef->rowoffset;
-					polybottom = polytop - textureheight[gl_midtexture]*repeats;
+					polytop = min(front->ceilingheight, back->ceilingheight) + gr_sidedef->rowoffset;
+					polybottom = polytop - textureheight[gr_midtexture]*repeats;
 				}
 			}
-			else if (!!(gl_linedef->flags & ML_DONTPEGBOTTOM) ^ !!(gl_linedef->flags & ML_EFFECT3))
+			else if (!!(gr_linedef->flags & ML_DONTPEGBOTTOM) ^ !!(gr_linedef->flags & ML_EFFECT3))
+#else
+            if (gr_linedef->flags & ML_DONTPEGBOTTOM)
+#endif
 			{
-				polybottom = popenbottom + gl_sidedef->rowoffset;
-				polytop = polybottom + textureheight[gl_midtexture]*repeats;
+				polybottom = popenbottom + gr_sidedef->rowoffset;
+				polytop = polybottom + textureheight[gr_midtexture]*repeats;
 			}
 			else
 			{
-				polytop = popentop + gl_sidedef->rowoffset;
-				polybottom = polytop - textureheight[gl_midtexture]*repeats;
+				polytop = popentop + gr_sidedef->rowoffset;
+				polybottom = polytop - textureheight[gr_midtexture]*repeats;
 			}
 			// CB
+#ifdef POLYOBJECTS
 			// NOTE: With polyobjects, whenever you need to check the properties of the polyobject sector it belongs to,
 			// you must use the linedef's backsector to be correct
-			if (gl_curline->polyseg)
+			if (gr_curline->polyseg)
 			{
 				lowcut = polybottom;
 				highcut = polytop;
 			}
+#endif
 			else
 			{
 				// The cut-off values of a linedef can always be constant, since every line has an absoulute front and or back sector
@@ -1386,12 +1754,16 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 
 			{
 				// PEGGING
-				if (!!(gl_linedef->flags & ML_DONTPEGBOTTOM) ^ !!(gl_linedef->flags & ML_EFFECT3))
-					texturevpeg = textureheight[gl_sidedef->midtexture]*repeats - h + polybottom;
+#ifdef ESLOPE
+				if (!!(gr_linedef->flags & ML_DONTPEGBOTTOM) ^ !!(gr_linedef->flags & ML_EFFECT3))
+#else
+				if (gr_linedef->flags & ML_DONTPEGBOTTOM)
+#endif
+					texturevpeg = textureheight[gr_sidedef->midtexture]*repeats - h + polybottom;
 				else
 					texturevpeg = polytop - h;
 
-				grTex = HWR_GetTexture(gl_midtexture);
+				grTex = HWR_GetTexture(gr_midtexture);
 
 				wallVerts[3].t = wallVerts[2].t = texturevpeg * grTex->scaleY;
 				wallVerts[0].t = wallVerts[1].t = (h - l + texturevpeg) * grTex->scaleY;
@@ -1405,13 +1777,14 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 			wallVerts[2].y = wallVerts[3].y = FIXED_TO_FLOAT(h);
 			wallVerts[0].y = wallVerts[1].y = FIXED_TO_FLOAT(l);
 
+#ifdef ESLOPE
 			// Correct to account for slopes
 			{
 				fixed_t midtextureslant;
 
-				if (gl_linedef->flags & ML_EFFECT2)
+				if (gr_linedef->flags & ML_EFFECT2)
 					midtextureslant = 0;
-				else if (!!(gl_linedef->flags & ML_DONTPEGBOTTOM) ^ !!(gl_linedef->flags & ML_EFFECT3))
+				else if (!!(gr_linedef->flags & ML_DONTPEGBOTTOM) ^ !!(gr_linedef->flags & ML_EFFECT3))
 					midtextureslant = worldlow < worldbottom
 							  ? worldbottomslope-worldbottom
 							  : worldlowslope-worldlow;
@@ -1436,8 +1809,8 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 
 				{
 					// PEGGING
-					if (!!(gl_linedef->flags & ML_DONTPEGBOTTOM) ^ !!(gl_linedef->flags & ML_EFFECT3))
-						texturevpeg = textureheight[gl_sidedef->midtexture]*repeats - h + polybottom;
+					if (!!(gr_linedef->flags & ML_DONTPEGBOTTOM) ^ !!(gr_linedef->flags & ML_EFFECT3))
+						texturevpeg = textureheight[gr_sidedef->midtexture]*repeats - h + polybottom;
 					else
 						texturevpeg = polytop - h;
 					wallVerts[2].t = texturevpeg * grTex->scaleY;
@@ -1447,11 +1820,39 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 				wallVerts[2].y = FIXED_TO_FLOAT(h);
 				wallVerts[1].y = FIXED_TO_FLOAT(l);
 			}
+#endif
 
-			// set alpha for transparent walls
+			// set alpha for transparent walls (new boom and legacy linedef types)
 			// ooops ! this do not work at all because render order we should render it in backtofront order
-			switch (gl_linedef->special)
+			switch (gr_linedef->special)
 			{
+				case 900:
+					blendmode = HWR_TranstableToAlpha(tr_trans10, &Surf);
+					break;
+				case 901:
+					blendmode = HWR_TranstableToAlpha(tr_trans20, &Surf);
+					break;
+				case 902:
+					blendmode = HWR_TranstableToAlpha(tr_trans30, &Surf);
+					break;
+				case 903:
+					blendmode = HWR_TranstableToAlpha(tr_trans40, &Surf);
+					break;
+				case 904:
+					blendmode = HWR_TranstableToAlpha(tr_trans50, &Surf);
+					break;
+				case 905:
+					blendmode = HWR_TranstableToAlpha(tr_trans60, &Surf);
+					break;
+				case 906:
+					blendmode = HWR_TranstableToAlpha(tr_trans70, &Surf);
+					break;
+				case 907:
+					blendmode = HWR_TranstableToAlpha(tr_trans80, &Surf);
+					break;
+				case 908:
+					blendmode = HWR_TranstableToAlpha(tr_trans90, &Surf);
+					break;
 				//  Translucent
 				case 102:
 				case 121:
@@ -1469,77 +1870,123 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 				case 221:
 				case 253:
 				case 256:
-					if (gl_linedef->blendmode && gl_linedef->blendmode != AST_FOG)
-						blendmode = HWR_SurfaceBlend(gl_linedef->blendmode, R_GetLinedefTransTable(gl_linedef->alpha), &Surf);
-					else
-						blendmode = PF_Translucent;
+					blendmode = PF_Translucent;
 					break;
 				default:
-					if (gl_linedef->blendmode && gl_linedef->blendmode != AST_FOG)
-					{
-						if (gl_linedef->alpha >= 0 && gl_linedef->alpha < FRACUNIT)
-							blendmode = HWR_SurfaceBlend(gl_linedef->blendmode, R_GetLinedefTransTable(gl_linedef->alpha), &Surf);
-						else
-							blendmode = HWR_GetBlendModeFlag(gl_linedef->blendmode);
-					}
-					else if (gl_linedef->alpha >= 0 && gl_linedef->alpha < FRACUNIT)
-						blendmode = HWR_TranstableToAlpha(R_GetLinedefTransTable(gl_linedef->alpha), &Surf);
-					else
-						blendmode = PF_Masked;
+					blendmode = PF_Masked;
 					break;
 			}
 
-			if (gl_curline->polyseg && gl_curline->polyseg->translucency > 0)
+#ifdef POLYOBJECTS
+			if (gr_curline->polyseg && gr_curline->polyseg->translucency > 0)
 			{
-				if (gl_curline->polyseg->translucency >= NUMTRANSMAPS) // wall not drawn
+				if (gr_curline->polyseg->translucency >= NUMTRANSMAPS) // wall not drawn
 				{
-					Surf.PolyColor.s.alpha = 0x00; // This shouldn't draw anything regardless of blendmode
+					Surf.FlatColor.s.alpha = 0x00; // This shouldn't draw anything regardless of blendmode
 					blendmode = PF_Masked;
 				}
 				else
-					blendmode = HWR_TranstableToAlpha(gl_curline->polyseg->translucency, &Surf);
+					blendmode = HWR_TranstableToAlpha(gr_curline->polyseg->translucency, &Surf);
 			}
+#endif
 
-			// Render midtextures on two-sided lines with a z-buffer offset.
-			// This will cause the midtexture appear on top, if a FOF overlaps with it.
-			blendmode |= PF_Decal;
-
-			if (gl_frontsector->numlights)
+			if (gr_frontsector->numlights)
 			{
 				if (!(blendmode & PF_Masked))
-					HWR_SplitWall(gl_frontsector, wallVerts, gl_midtexture, &Surf, FF_TRANSLUCENT, NULL, blendmode);
+					HWR_SplitWall(gr_frontsector, wallVerts, gr_midtexture, &Surf, FF_TRANSLUCENT, NULL);
 				else
-					HWR_SplitWall(gl_frontsector, wallVerts, gl_midtexture, &Surf, FF_CUTLEVEL, NULL, blendmode);
-			}
-			else if (!(blendmode & PF_Masked))
-				HWR_AddTransparentWall(wallVerts, &Surf, gl_midtexture, blendmode, false, lightnum, colormap);
-			else
-				HWR_ProjectWall(wallVerts, &Surf, blendmode, lightnum, colormap);
-		}
-
-		// Sky culling
-		// No longer so much a mess as before!
-		if (!gl_curline->polyseg) // Don't do it for polyobjects
-		{
-			if (gl_frontsector->ceilingpic == skyflatnum)
-			{
-				if (gl_backsector->ceilingpic != skyflatnum) // don't cull if back sector is also sky
 				{
-					wallVerts[2].y = wallVerts[3].y = FIXED_TO_FLOAT(INT32_MAX); // draw to top of map space
-					wallVerts[0].y = FIXED_TO_FLOAT(worldtop);
-					wallVerts[1].y = FIXED_TO_FLOAT(worldtopslope);
-					HWR_DrawSkyWall(wallVerts, &Surf);
+					HWR_SplitWall(gr_frontsector, wallVerts, gr_midtexture, &Surf, FF_CUTLEVEL, NULL);
 				}
 			}
+			else if (!(blendmode & PF_Masked))
+				HWR_AddTransparentWall(wallVerts, &Surf, gr_midtexture, blendmode, false, lightnum, colormap);
+			else
+				HWR_ProjectWall(wallVerts, &Surf, blendmode, lightnum, colormap);
 
-			if (gl_frontsector->floorpic == skyflatnum)
+			// If there is a colormap change, remove it.
+/*			if (!(Surf.FlatColor.s.red + Surf.FlatColor.s.green + Surf.FlatColor.s.blue == Surf.FlatColor.s.red/3)
 			{
-				if (gl_backsector->floorpic != skyflatnum) // don't cull if back sector is also sky
+				Surf.FlatColor.s.red = Surf.FlatColor.s.green = Surf.FlatColor.s.blue = 0xff;
+				Surf.FlatColor.rgba = 0xffffffff;
+			}*/
+		}
+
+		// Isn't this just the most lovely mess
+		if (!gr_curline->polyseg) // Don't do it for polyobjects
+		{
+			if (gr_frontsector->ceilingpic == skyflatnum || gr_backsector->ceilingpic == skyflatnum)
+			{
+				fixed_t depthwallheight;
+
+				if (!gr_sidedef->toptexture || (gr_frontsector->ceilingpic == skyflatnum && gr_backsector->ceilingpic == skyflatnum)) // when both sectors are sky, the top texture isn't drawn
+					depthwallheight = gr_frontsector->ceilingheight < gr_backsector->ceilingheight ? gr_frontsector->ceilingheight : gr_backsector->ceilingheight;
+				else
+					depthwallheight = gr_frontsector->ceilingheight > gr_backsector->ceilingheight ? gr_frontsector->ceilingheight : gr_backsector->ceilingheight;
+
+				if (gr_frontsector->ceilingheight-gr_frontsector->floorheight <= 0) // current sector is a thok barrier
 				{
-					wallVerts[3].y = FIXED_TO_FLOAT(worldbottom);
-					wallVerts[2].y = FIXED_TO_FLOAT(worldbottomslope);
-					wallVerts[0].y = wallVerts[1].y = FIXED_TO_FLOAT(INT32_MIN); // draw to bottom of map space
-					HWR_DrawSkyWall(wallVerts, &Surf);
+					if (gr_backsector->ceilingheight-gr_backsector->floorheight <= 0) // behind sector is also a thok barrier
+					{
+						if (!gr_sidedef->bottomtexture) // Only extend further down if there's no texture
+							HWR_DrawSkyWall(wallVerts, &Surf, worldbottom < worldlow ? worldbottom : worldlow, INT32_MAX);
+						else
+							HWR_DrawSkyWall(wallVerts, &Surf, worldbottom > worldlow ? worldbottom : worldlow, INT32_MAX);
+					}
+					// behind sector is not a thok barrier
+					else if (gr_backsector->ceilingheight <= gr_frontsector->ceilingheight) // behind sector ceiling is lower or equal to current sector
+						HWR_DrawSkyWall(wallVerts, &Surf, depthwallheight, INT32_MAX);
+						// gr_front/backsector heights need to be used here because of the worldtop being set to worldhigh earlier on
+				}
+				else if (gr_backsector->ceilingheight-gr_backsector->floorheight <= 0) // behind sector is a thok barrier, current sector is not
+				{
+					if (gr_backsector->ceilingheight >= gr_frontsector->ceilingheight // thok barrier ceiling height is equal to or greater than current sector ceiling height
+						|| gr_backsector->floorheight <= gr_frontsector->floorheight // thok barrier ceiling height is equal to or less than current sector floor height
+						|| gr_backsector->ceilingpic != skyflatnum) // thok barrier is not a sky
+						HWR_DrawSkyWall(wallVerts, &Surf, depthwallheight, INT32_MAX);
+				}
+				else // neither sectors are thok barriers
+				{
+					if ((gr_backsector->ceilingheight < gr_frontsector->ceilingheight && !gr_sidedef->toptexture) // no top texture and sector behind is lower
+						|| gr_backsector->ceilingpic != skyflatnum) // behind sector is not a sky
+						HWR_DrawSkyWall(wallVerts, &Surf, depthwallheight, INT32_MAX);
+				}
+			}
+			// And now for sky floors!
+			if (gr_frontsector->floorpic == skyflatnum || gr_backsector->floorpic == skyflatnum)
+			{
+				fixed_t depthwallheight;
+
+				if (!gr_sidedef->bottomtexture)
+					depthwallheight = worldbottom > worldlow ? worldbottom : worldlow;
+				else
+					depthwallheight = worldbottom < worldlow ? worldbottom : worldlow;
+
+				if (gr_frontsector->ceilingheight-gr_frontsector->floorheight <= 0) // current sector is a thok barrier
+				{
+					if (gr_backsector->ceilingheight-gr_backsector->floorheight <= 0) // behind sector is also a thok barrier
+					{
+						if (!gr_sidedef->toptexture) // Only extend up if there's no texture
+							HWR_DrawSkyWall(wallVerts, &Surf, INT32_MIN, worldtop > worldhigh ? worldtop : worldhigh);
+						else
+							HWR_DrawSkyWall(wallVerts, &Surf, INT32_MIN, worldtop < worldhigh ? worldtop : worldhigh);
+					}
+					// behind sector is not a thok barrier
+					else if (gr_backsector->floorheight >= gr_frontsector->floorheight) // behind sector floor is greater or equal to current sector
+						HWR_DrawSkyWall(wallVerts, &Surf, INT32_MIN, depthwallheight);
+				}
+				else if (gr_backsector->ceilingheight-gr_backsector->floorheight <= 0) // behind sector is a thok barrier, current sector is not
+				{
+					if (gr_backsector->floorheight <= gr_frontsector->floorheight // thok barrier floor height is equal to or less than current sector floor height
+						|| gr_backsector->ceilingheight >= gr_frontsector->ceilingheight // thok barrier floor height is equal to or greater than current sector ceiling height
+						|| gr_backsector->floorpic != skyflatnum) // thok barrier is not a sky
+						HWR_DrawSkyWall(wallVerts, &Surf, INT32_MIN, depthwallheight);
+				}
+				else // neither sectors are thok barriers
+				{
+					if ((gr_backsector->floorheight > gr_frontsector->floorheight && !gr_sidedef->bottomtexture) // no bottom texture and sector behind is higher
+						|| gr_backsector->floorpic != skyflatnum) // behind sector is not a sky
+						HWR_DrawSkyWall(wallVerts, &Surf, INT32_MIN, depthwallheight);
 				}
 			}
 		}
@@ -1547,149 +1994,121 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 	else
 	{
 		// Single sided line... Deal only with the middletexture (if one exists)
-		gl_midtexture = R_GetTextureNum(gl_sidedef->midtexture);
-		if (gl_midtexture && gl_linedef->special != 41) // (Ignore horizon line for OGL)
+		gr_midtexture = R_GetTextureNum(gr_sidedef->midtexture);
+		if (gr_midtexture)
 		{
 			{
 				fixed_t     texturevpeg;
 				// PEGGING
-				if ((gl_linedef->flags & (ML_DONTPEGBOTTOM|ML_EFFECT2)) == (ML_DONTPEGBOTTOM|ML_EFFECT2))
-					texturevpeg = gl_frontsector->floorheight + textureheight[gl_sidedef->midtexture] - gl_frontsector->ceilingheight + gl_sidedef->rowoffset;
-				else if (gl_linedef->flags & ML_DONTPEGBOTTOM)
-					texturevpeg = worldbottom + textureheight[gl_sidedef->midtexture] - worldtop + gl_sidedef->rowoffset;
+#ifdef ESLOPE
+				if ((gr_linedef->flags & (ML_DONTPEGBOTTOM|ML_EFFECT2)) == (ML_DONTPEGBOTTOM|ML_EFFECT2))
+					texturevpeg = gr_frontsector->floorheight + textureheight[gr_sidedef->midtexture] - gr_frontsector->ceilingheight + gr_sidedef->rowoffset;
+				else
+#endif
+				if (gr_linedef->flags & ML_DONTPEGBOTTOM)
+					texturevpeg = worldbottom + textureheight[gr_sidedef->midtexture] - worldtop + gr_sidedef->rowoffset;
 				else
 					// top of texture at top
-					texturevpeg = gl_sidedef->rowoffset;
+					texturevpeg = gr_sidedef->rowoffset;
 
-				grTex = HWR_GetTexture(gl_midtexture);
+				grTex = HWR_GetTexture(gr_midtexture);
 
 				wallVerts[3].t = wallVerts[2].t = texturevpeg * grTex->scaleY;
-				wallVerts[0].t = wallVerts[1].t = (texturevpeg + gl_frontsector->ceilingheight - gl_frontsector->floorheight) * grTex->scaleY;
+				wallVerts[0].t = wallVerts[1].t = (texturevpeg + gr_frontsector->ceilingheight - gr_frontsector->floorheight) * grTex->scaleY;
 				wallVerts[0].s = wallVerts[3].s = cliplow * grTex->scaleX;
 				wallVerts[2].s = wallVerts[1].s = cliphigh * grTex->scaleX;
 
+#ifdef ESLOPE
 				// Texture correction for slopes
-				if (gl_linedef->flags & ML_EFFECT2) {
-					wallVerts[3].t += (gl_frontsector->ceilingheight - worldtop) * grTex->scaleY;
-					wallVerts[2].t += (gl_frontsector->ceilingheight - worldtopslope) * grTex->scaleY;
-					wallVerts[0].t += (gl_frontsector->floorheight - worldbottom) * grTex->scaleY;
-					wallVerts[1].t += (gl_frontsector->floorheight - worldbottomslope) * grTex->scaleY;
-				} else if (gl_linedef->flags & ML_DONTPEGBOTTOM) {
+				if (gr_linedef->flags & ML_EFFECT2) {
+					wallVerts[3].t += (gr_frontsector->ceilingheight - worldtop) * grTex->scaleY;
+					wallVerts[2].t += (gr_frontsector->ceilingheight - worldtopslope) * grTex->scaleY;
+					wallVerts[0].t += (gr_frontsector->floorheight - worldbottom) * grTex->scaleY;
+					wallVerts[1].t += (gr_frontsector->floorheight - worldbottomslope) * grTex->scaleY;
+				} else if (gr_linedef->flags & ML_DONTPEGBOTTOM) {
 					wallVerts[3].t = wallVerts[0].t + (worldbottom-worldtop) * grTex->scaleY;
 					wallVerts[2].t = wallVerts[1].t + (worldbottomslope-worldtopslope) * grTex->scaleY;
 				} else {
 					wallVerts[0].t = wallVerts[3].t - (worldbottom-worldtop) * grTex->scaleY;
 					wallVerts[1].t = wallVerts[2].t - (worldbottomslope-worldtopslope) * grTex->scaleY;
 				}
+#endif
 			}
-
+#ifdef ESLOPE
 			//Set textures properly on single sided walls that are sloped
 			wallVerts[3].y = FIXED_TO_FLOAT(worldtop);
 			wallVerts[0].y = FIXED_TO_FLOAT(worldbottom);
 			wallVerts[2].y = FIXED_TO_FLOAT(worldtopslope);
 			wallVerts[1].y = FIXED_TO_FLOAT(worldbottomslope);
-
+#else
+			// set top/bottom coords
+			wallVerts[2].y = wallVerts[3].y = FIXED_TO_FLOAT(worldtop);
+			wallVerts[0].y = wallVerts[1].y = FIXED_TO_FLOAT(worldbottom);
+#endif
 			// I don't think that solid walls can use translucent linedef types...
-			if (gl_frontsector->numlights)
-				HWR_SplitWall(gl_frontsector, wallVerts, gl_midtexture, &Surf, FF_CUTLEVEL, NULL, 0);
+			if (gr_frontsector->numlights)
+				HWR_SplitWall(gr_frontsector, wallVerts, gr_midtexture, &Surf, FF_CUTLEVEL, NULL);
 			else
 			{
 				if (grTex->mipmap.flags & TF_TRANSPARENT)
-					HWR_AddTransparentWall(wallVerts, &Surf, gl_midtexture, PF_Environment, false, lightnum, colormap);
+					HWR_AddTransparentWall(wallVerts, &Surf, gr_midtexture, PF_Environment, false, lightnum, colormap);
 				else
 					HWR_ProjectWall(wallVerts, &Surf, PF_Masked, lightnum, colormap);
 			}
 		}
 
-		if (!gl_curline->polyseg)
+		if (!gr_curline->polyseg)
 		{
-			if (gl_frontsector->ceilingpic == skyflatnum) // It's a single-sided line with sky for its sector
-			{
-				wallVerts[2].y = wallVerts[3].y = FIXED_TO_FLOAT(INT32_MAX); // draw to top of map space
-				wallVerts[0].y = FIXED_TO_FLOAT(worldtop);
-				wallVerts[1].y = FIXED_TO_FLOAT(worldtopslope);
-				HWR_DrawSkyWall(wallVerts, &Surf);
-			}
-			if (gl_frontsector->floorpic == skyflatnum)
-			{
-				wallVerts[3].y = FIXED_TO_FLOAT(worldbottom);
-				wallVerts[2].y = FIXED_TO_FLOAT(worldbottomslope);
-				wallVerts[0].y = wallVerts[1].y = FIXED_TO_FLOAT(INT32_MIN); // draw to bottom of map space
-				HWR_DrawSkyWall(wallVerts, &Surf);
-			}
+			if (gr_frontsector->ceilingpic == skyflatnum) // It's a single-sided line with sky for its sector
+				HWR_DrawSkyWall(wallVerts, &Surf, worldtop, INT32_MAX);
+			if (gr_frontsector->floorpic == skyflatnum)
+				HWR_DrawSkyWall(wallVerts, &Surf, INT32_MIN, worldbottom);
 		}
 	}
 
 
 	//Hurdler: 3d-floors test
-	if (gl_frontsector && gl_backsector && !Tag_Compare(&gl_frontsector->tags, &gl_backsector->tags) && (gl_backsector->ffloors || gl_frontsector->ffloors))
+#ifdef R_FAKEFLOORS
+	if (gr_frontsector && gr_backsector && gr_frontsector->tag != gr_backsector->tag && (gr_backsector->ffloors || gr_frontsector->ffloors))
 	{
 		ffloor_t * rover;
 		fixed_t    highcut = 0, lowcut = 0;
-		fixed_t lowcutslope, highcutslope;
-
-		// Used for height comparisons and etc across FOFs and slopes
-		fixed_t high1, highslope1, low1, lowslope1;
 
 		INT32 texnum;
 		line_t * newline = NULL; // Multi-Property FOF
 
-		lowcut = max(worldbottom, worldlow);
-		highcut = min(worldtop, worldhigh);
-		lowcutslope = max(worldbottomslope, worldlowslope);
-		highcutslope = min(worldtopslope, worldhighslope);
+        ///TODO add slope support (fixing cutoffs, proper wall clipping) - maybe just disable highcut/lowcut if either sector or FOF has a slope
+        ///     to allow fun plane intersecting in OGL? But then people would abuse that and make software look bad. :C
+		highcut = gr_frontsector->ceilingheight < gr_backsector->ceilingheight ? gr_frontsector->ceilingheight : gr_backsector->ceilingheight;
+		lowcut = gr_frontsector->floorheight > gr_backsector->floorheight ? gr_frontsector->floorheight : gr_backsector->floorheight;
 
-		if (gl_backsector->ffloors)
+		if (gr_backsector->ffloors)
 		{
-			for (rover = gl_backsector->ffloors; rover; rover = rover->next)
+			for (rover = gr_backsector->ffloors; rover; rover = rover->next)
 			{
-				boolean bothsides = false;
-				// Skip if it exists on both sectors.
-				ffloor_t * r2;
-				for (r2 = gl_frontsector->ffloors; r2; r2 = r2->next)
-					if (rover->master == r2->master)
-					{
-						bothsides = true;
-						break;
-					}
-
-				if (bothsides) continue;
-
-				if (!(rover->flags & FF_EXISTS) || !(rover->flags & FF_RENDERSIDES))
+				if (!(rover->flags & FF_EXISTS) || !(rover->flags & FF_RENDERSIDES) || (rover->flags & FF_INVERTSIDES))
 					continue;
-				if (!(rover->flags & FF_ALLSIDES) && rover->flags & FF_INVERTSIDES)
-					continue;
-
-				SLOPEPARAMS(*rover->t_slope, high1, highslope1, *rover->topheight)
-				SLOPEPARAMS(*rover->b_slope, low1,  lowslope1,  *rover->bottomheight)
-
-				if ((high1 < lowcut && highslope1 < lowcutslope) || (low1 > highcut && lowslope1 > highcutslope))
+				if (*rover->topheight < lowcut || *rover->bottomheight > highcut)
 					continue;
 
 				texnum = R_GetTextureNum(sides[rover->master->sidenum[0]].midtexture);
 
 				if (rover->master->flags & ML_TFERLINE)
 				{
-					size_t linenum = gl_curline->linedef-gl_backsector->lines[0];
+					size_t linenum = gr_curline->linedef-gr_backsector->lines[0];
 					newline = rover->master->frontsector->lines[0] + linenum;
 					texnum = R_GetTextureNum(sides[newline->sidenum[0]].midtexture);
 				}
 
-				h  = P_GetFFloorTopZAt   (rover, v1x, v1y);
-				hS = P_GetFFloorTopZAt   (rover, v2x, v2y);
-				l  = P_GetFFloorBottomZAt(rover, v1x, v1y);
-				lS = P_GetFFloorBottomZAt(rover, v2x, v2y);
-				// Adjust the heights so the FOF does not overlap with top and bottom textures.
-				if (h >= highcut && hS >= highcutslope)
-				{
-					h = highcut;
-					hS = highcutslope;
-				}
-				if (l <= lowcut && lS <= lowcutslope)
-				{
-					l = lowcut;
-					lS = lowcutslope;
-				}
+#ifdef ESLOPE
+				h  = *rover->t_slope ? P_GetZAt(*rover->t_slope, v1x, v1y) : *rover->topheight;
+				hS = *rover->t_slope ? P_GetZAt(*rover->t_slope, v2x, v2y) : *rover->topheight;
+				l  = *rover->b_slope ? P_GetZAt(*rover->b_slope, v1x, v1y) : *rover->bottomheight;
+				lS = *rover->b_slope ? P_GetZAt(*rover->b_slope, v2x, v2y) : *rover->bottomheight;
+				if (!(*rover->t_slope) && !gr_frontsector->c_slope && !gr_backsector->c_slope && h > highcut)
+					h = hS = highcut;
+				if (!(*rover->b_slope) && !gr_frontsector->f_slope && !gr_backsector->f_slope && l < lowcut)
+					l = lS = lowcut;
 				//Hurdler: HW code starts here
 				//FIXME: check if peging is correct
 				// set top/bottom coords
@@ -1698,6 +2117,19 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 				wallVerts[2].y = FIXED_TO_FLOAT(hS);
 				wallVerts[0].y = FIXED_TO_FLOAT(l);
 				wallVerts[1].y = FIXED_TO_FLOAT(lS);
+#else
+				h = *rover->topheight;
+				l = *rover->bottomheight;
+				if (h > highcut)
+					h = highcut;
+				if (l < lowcut)
+					l = lowcut;
+				//Hurdler: HW code starts here
+				//FIXME: check if peging is correct
+				// set top/bottom coords
+				wallVerts[2].y = wallVerts[3].y = FIXED_TO_FLOAT(h);
+				wallVerts[0].y = wallVerts[1].y = FIXED_TO_FLOAT(l);
+#endif
 				if (rover->flags & FF_FOG)
 				{
 					wallVerts[3].t = wallVerts[2].t = 0;
@@ -1709,7 +2141,9 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 				{
 					fixed_t texturevpeg;
 					boolean attachtobottom = false;
+#ifdef ESLOPE
 					boolean slopeskew = false; // skew FOF walls with slopes?
+#endif
 
 					// Wow, how was this missing from OpenGL for so long?
 					// ...Oh well, anyway, Lower Unpegged now changes pegging of FOFs like in software
@@ -1718,17 +2152,22 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 					{
 						texturevpeg = sides[newline->sidenum[0]].rowoffset;
 						attachtobottom = !!(newline->flags & ML_DONTPEGBOTTOM);
+#ifdef ESLOPE
 						slopeskew = !!(newline->flags & ML_DONTPEGTOP);
+#endif
 					}
 					else
 					{
 						texturevpeg = sides[rover->master->sidenum[0]].rowoffset;
-						attachtobottom = !!(gl_linedef->flags & ML_DONTPEGBOTTOM);
+						attachtobottom = !!(gr_linedef->flags & ML_DONTPEGBOTTOM);
+#ifdef ESLOPE
 						slopeskew = !!(rover->master->flags & ML_DONTPEGTOP);
+#endif
 					}
 
 					grTex = HWR_GetTexture(texnum);
 
+#ifdef ESLOPE
 					if (!slopeskew) // no skewing
 					{
 						if (attachtobottom)
@@ -1753,6 +2192,12 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 							wallVerts[2].t = wallVerts[1].t - (hS - lS) * grTex->scaleY;
 						}
 					}
+#else
+					if (attachtobottom)
+						texturevpeg -= *rover->topheight - *rover->bottomheight;
+					wallVerts[3].t = wallVerts[2].t = (*rover->topheight - h + texturevpeg) * grTex->scaleY;
+					wallVerts[0].t = wallVerts[1].t = (*rover->topheight - l + texturevpeg) * grTex->scaleY;
+#endif
 
 					wallVerts[0].s = wallVerts[3].s = cliplow * grTex->scaleX;
 					wallVerts[2].s = wallVerts[1].s = cliphigh * grTex->scaleX;
@@ -1765,12 +2210,19 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 
 					lightnum = rover->master->frontsector->lightlevel;
 					colormap = rover->master->frontsector->extra_colormap;
-					lightnum = colormap ? lightnum : HWR_CalcWallLight(lightnum, vs.x, vs.y, ve.x, ve.y);
 
-					Surf.PolyColor.s.alpha = HWR_FogBlockAlpha(rover->master->frontsector->lightlevel, rover->master->frontsector->extra_colormap);
+					if (rover->master->frontsector->extra_colormap)
+					{
 
-					if (gl_frontsector->numlights)
-						HWR_SplitWall(gl_frontsector, wallVerts, 0, &Surf, rover->flags, rover, blendmode);
+						Surf.FlatColor.s.alpha = HWR_FogBlockAlpha(rover->master->frontsector->lightlevel,rover->master->frontsector->extra_colormap->rgba);
+					}
+					else
+					{
+						Surf.FlatColor.s.alpha = HWR_FogBlockAlpha(rover->master->frontsector->lightlevel,NORMALFOG);
+					}
+
+					if (gr_frontsector->numlights)
+						HWR_SplitWall(gr_frontsector, wallVerts, 0, &Surf, rover->flags, rover);
 					else
 						HWR_AddTransparentWall(wallVerts, &Surf, 0, blendmode, true, lightnum, colormap);
 				}
@@ -1778,14 +2230,14 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 				{
 					FBITFIELD blendmode = PF_Masked;
 
-					if ((rover->flags & FF_TRANSLUCENT && rover->alpha < 256) || rover->blend)
+					if (rover->flags & FF_TRANSLUCENT && rover->alpha < 256)
 					{
-						blendmode = rover->blend ? HWR_GetBlendModeFlag(rover->blend) : PF_Translucent;
-						Surf.PolyColor.s.alpha = (UINT8)rover->alpha-1 > 255 ? 255 : rover->alpha-1;
+						blendmode = PF_Translucent;
+						Surf.FlatColor.s.alpha = (UINT8)rover->alpha-1 > 255 ? 255 : rover->alpha-1;
 					}
 
-					if (gl_frontsector->numlights)
-						HWR_SplitWall(gl_frontsector, wallVerts, texnum, &Surf, rover->flags, rover, blendmode);
+					if (gr_frontsector->numlights)
+						HWR_SplitWall(gr_frontsector, wallVerts, texnum, &Surf, rover->flags, rover);
 					else
 					{
 						if (blendmode != PF_Masked)
@@ -1797,56 +2249,32 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 			}
 		}
 
-		if (gl_frontsector->ffloors) // Putting this seperate should allow 2 FOF sectors to be connected without too many errors? I think?
+		if (gr_frontsector->ffloors) // Putting this seperate should allow 2 FOF sectors to be connected without too many errors? I think?
 		{
-			for (rover = gl_frontsector->ffloors; rover; rover = rover->next)
+			for (rover = gr_frontsector->ffloors; rover; rover = rover->next)
 			{
-				boolean bothsides = false;
-				// Skip if it exists on both sectors.
-				ffloor_t * r2;
-				for (r2 = gl_backsector->ffloors; r2; r2 = r2->next)
-					if (rover->master == r2->master)
-					{
-						bothsides = true;
-						break;
-					}
-
-				if (bothsides) continue;
-
-				if (!(rover->flags & FF_EXISTS) || !(rover->flags & FF_RENDERSIDES))
+				if (!(rover->flags & FF_EXISTS) || !(rover->flags & FF_RENDERSIDES) || !(rover->flags & FF_ALLSIDES))
 					continue;
-				if (!(rover->flags & FF_ALLSIDES || rover->flags & FF_INVERTSIDES))
-					continue;
-
-				SLOPEPARAMS(*rover->t_slope, high1, highslope1, *rover->topheight)
-				SLOPEPARAMS(*rover->b_slope, low1,  lowslope1,  *rover->bottomheight)
-
-				if ((high1 < lowcut && highslope1 < lowcutslope) || (low1 > highcut && lowslope1 > highcutslope))
+				if (*rover->topheight < lowcut || *rover->bottomheight > highcut)
 					continue;
 
 				texnum = R_GetTextureNum(sides[rover->master->sidenum[0]].midtexture);
 
 				if (rover->master->flags & ML_TFERLINE)
 				{
-					size_t linenum = gl_curline->linedef-gl_backsector->lines[0];
+					size_t linenum = gr_curline->linedef-gr_backsector->lines[0];
 					newline = rover->master->frontsector->lines[0] + linenum;
 					texnum = R_GetTextureNum(sides[newline->sidenum[0]].midtexture);
 				}
-				h  = P_GetFFloorTopZAt   (rover, v1x, v1y);
-				hS = P_GetFFloorTopZAt   (rover, v2x, v2y);
-				l  = P_GetFFloorBottomZAt(rover, v1x, v1y);
-				lS = P_GetFFloorBottomZAt(rover, v2x, v2y);
-				// Adjust the heights so the FOF does not overlap with top and bottom textures.
-				if (h >= highcut && hS >= highcutslope)
-				{
-					h = highcut;
-					hS = highcutslope;
-				}
-				if (l <= lowcut && lS <= lowcutslope)
-				{
-					l = lowcut;
-					lS = lowcutslope;
-				}
+#ifdef ESLOPE //backsides
+				h  = *rover->t_slope ? P_GetZAt(*rover->t_slope, v1x, v1y) : *rover->topheight;
+				hS = *rover->t_slope ? P_GetZAt(*rover->t_slope, v2x, v2y) : *rover->topheight;
+				l  = *rover->b_slope ? P_GetZAt(*rover->b_slope, v1x, v1y) : *rover->bottomheight;
+				lS = *rover->b_slope ? P_GetZAt(*rover->b_slope, v2x, v2y) : *rover->bottomheight;
+				if (!(*rover->t_slope) && !gr_frontsector->c_slope && !gr_backsector->c_slope && h > highcut)
+					h = hS = highcut;
+				if (!(*rover->b_slope) && !gr_frontsector->f_slope && !gr_backsector->f_slope && l < lowcut)
+					l = lS = lowcut;
 				//Hurdler: HW code starts here
 				//FIXME: check if peging is correct
 				// set top/bottom coords
@@ -1855,6 +2283,19 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 				wallVerts[2].y = FIXED_TO_FLOAT(hS);
 				wallVerts[0].y = FIXED_TO_FLOAT(l);
 				wallVerts[1].y = FIXED_TO_FLOAT(lS);
+#else
+				h = *rover->topheight;
+				l = *rover->bottomheight;
+				if (h > highcut)
+					h = highcut;
+				if (l < lowcut)
+					l = lowcut;
+				//Hurdler: HW code starts here
+				//FIXME: check if peging is correct
+				// set top/bottom coords
+				wallVerts[2].y = wallVerts[3].y = FIXED_TO_FLOAT(h);
+				wallVerts[0].y = wallVerts[1].y = FIXED_TO_FLOAT(l);
+#endif
 				if (rover->flags & FF_FOG)
 				{
 					wallVerts[3].t = wallVerts[2].t = 0;
@@ -1889,12 +2330,18 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 
 					lightnum = rover->master->frontsector->lightlevel;
 					colormap = rover->master->frontsector->extra_colormap;
-					lightnum = colormap ? lightnum : HWR_CalcWallLight(lightnum, vs.x, vs.y, ve.x, ve.y);
 
-					Surf.PolyColor.s.alpha = HWR_FogBlockAlpha(rover->master->frontsector->lightlevel, rover->master->frontsector->extra_colormap);
+					if (rover->master->frontsector->extra_colormap)
+					{
+						Surf.FlatColor.s.alpha = HWR_FogBlockAlpha(rover->master->frontsector->lightlevel,rover->master->frontsector->extra_colormap->rgba);
+					}
+					else
+					{
+						Surf.FlatColor.s.alpha = HWR_FogBlockAlpha(rover->master->frontsector->lightlevel,NORMALFOG);
+					}
 
-					if (gl_backsector->numlights)
-						HWR_SplitWall(gl_backsector, wallVerts, 0, &Surf, rover->flags, rover, blendmode);
+					if (gr_backsector->numlights)
+						HWR_SplitWall(gr_backsector, wallVerts, 0, &Surf, rover->flags, rover);
 					else
 						HWR_AddTransparentWall(wallVerts, &Surf, 0, blendmode, true, lightnum, colormap);
 				}
@@ -1902,14 +2349,14 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 				{
 					FBITFIELD blendmode = PF_Masked;
 
-					if ((rover->flags & FF_TRANSLUCENT && rover->alpha < 256) || rover->blend)
+					if (rover->flags & FF_TRANSLUCENT && rover->alpha < 256)
 					{
-						blendmode = rover->blend ? HWR_GetBlendModeFlag(rover->blend) : PF_Translucent;
-						Surf.PolyColor.s.alpha = (UINT8)rover->alpha-1 > 255 ? 255 : rover->alpha-1;
+						blendmode = PF_Translucent;
+						Surf.FlatColor.s.alpha = (UINT8)rover->alpha-1 > 255 ? 255 : rover->alpha-1;
 					}
 
-					if (gl_backsector->numlights)
-						HWR_SplitWall(gl_backsector, wallVerts, texnum, &Surf, rover->flags, rover, blendmode);
+					if (gr_backsector->numlights)
+						HWR_SplitWall(gr_backsector, wallVerts, texnum, &Surf, rover->flags, rover);
 					else
 					{
 						if (blendmode != PF_Masked)
@@ -1921,7 +2368,7 @@ static void HWR_ProcessSeg(void) // Sort of like GLWall::Process in GZDoom
 			}
 		}
 	}
-#undef SLOPEPARAMS
+#endif
 //Hurdler: end of 3d-floors test
 }
 
@@ -1937,78 +2384,94 @@ static boolean CheckClip(seg_t * seg, sector_t * afrontsector, sector_t * abacks
 {
 	fixed_t frontf1,frontf2, frontc1, frontc2; // front floor/ceiling ends
 	fixed_t backf1, backf2, backc1, backc2; // back floor ceiling ends
-	boolean bothceilingssky = false, bothfloorssky = false;
-
-	if (abacksector->ceilingpic == skyflatnum && afrontsector->ceilingpic == skyflatnum)
-		bothceilingssky = true;
-	if (abacksector->floorpic == skyflatnum && afrontsector->floorpic == skyflatnum)
-		bothfloorssky = true;
 
 	// GZDoom method of sloped line clipping
 
+#ifdef ESLOPE
 	if (afrontsector->f_slope || afrontsector->c_slope || abacksector->f_slope || abacksector->c_slope)
 	{
 		fixed_t v1x, v1y, v2x, v2y; // the seg's vertexes as fixed_t
-		v1x = FLOAT_TO_FIXED(((polyvertex_t *)gl_curline->pv1)->x);
-		v1y = FLOAT_TO_FIXED(((polyvertex_t *)gl_curline->pv1)->y);
-		v2x = FLOAT_TO_FIXED(((polyvertex_t *)gl_curline->pv2)->x);
-		v2y = FLOAT_TO_FIXED(((polyvertex_t *)gl_curline->pv2)->y);
+		v1x = FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv1)->x);
+		v1y = FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv1)->y);
+		v2x = FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv2)->x);
+		v2y = FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv2)->y);
 #define SLOPEPARAMS(slope, end1, end2, normalheight) \
-		end1 = P_GetZAt(slope, v1x, v1y, normalheight); \
-		end2 = P_GetZAt(slope, v2x, v2y, normalheight);
+		if (slope) { \
+			end1 = P_GetZAt(slope, v1x, v1y); \
+			end2 = P_GetZAt(slope, v2x, v2y); \
+		} else \
+			end1 = end2 = normalheight;
 
-		SLOPEPARAMS(afrontsector->f_slope, frontf1, frontf2, afrontsector->  floorheight)
+		SLOPEPARAMS(afrontsector->f_slope, frontf1, frontf2, afrontsector->floorheight)
 		SLOPEPARAMS(afrontsector->c_slope, frontc1, frontc2, afrontsector->ceilingheight)
-		SLOPEPARAMS( abacksector->f_slope,  backf1,  backf2,  abacksector->  floorheight)
-		SLOPEPARAMS( abacksector->c_slope,  backc1,  backc2,  abacksector->ceilingheight)
+		SLOPEPARAMS( abacksector->f_slope, backf1,  backf2,  abacksector->floorheight)
+		SLOPEPARAMS( abacksector->c_slope, backc1,  backc2,  abacksector->ceilingheight)
 #undef SLOPEPARAMS
 	}
 	else
+#endif
 	{
-		frontf1 = frontf2 = afrontsector->  floorheight;
+		frontf1 = frontf2 = afrontsector->floorheight;
 		frontc1 = frontc2 = afrontsector->ceilingheight;
-		backf1  =  backf2 =  abacksector->  floorheight;
-		backc1  =  backc2 =  abacksector->ceilingheight;
+		backf1 = backf2 = abacksector->floorheight;
+		backc1 = backc2 = abacksector->ceilingheight;
 	}
-	// properly render skies (consider door "open" if both ceilings are sky)
-	// same for floors
-	if (!bothceilingssky && !bothfloorssky)
+
+	// now check for closed sectors!
+	if (backc1 <= frontf1 && backc2 <= frontf2)
 	{
-		// now check for closed sectors!
-		if ((backc1 <= frontf1 && backc2 <= frontf2)
-			|| (backf1 >= frontc1 && backf2 >= frontc2))
-		{
-			checkforemptylines = false;
-			return true;
-		}
+		checkforemptylines = false;
+		if (!seg->sidedef->toptexture)
+			return false;
 
-		if (backc1 <= backf1 && backc2 <= backf2)
-		{
-			// preserve a kind of transparent door/lift special effect:
-			if (((backc1 >= frontc1 && backc2 >= frontc2) || seg->sidedef->toptexture)
-			&& ((backf1 <= frontf1 && backf2 <= frontf2) || seg->sidedef->bottomtexture))
-			{
-				checkforemptylines = false;
-				return true;
-			}
-		}
+		if (abacksector->ceilingpic == skyflatnum && afrontsector->ceilingpic == skyflatnum)
+			return false;
+
+		return true;
 	}
 
-	if (!bothceilingssky) {
-		if (backc1 != frontc1 || backc2 != frontc2)
+	if (backf1 >= frontc1 && backf2 >= frontc2)
+	{
+		checkforemptylines = false;
+		if (!seg->sidedef->bottomtexture)
+			return false;
+
+		// properly render skies (consider door "open" if both floors are sky):
+		if (abacksector->ceilingpic == skyflatnum && afrontsector->ceilingpic == skyflatnum)
+			return false;
+
+		return true;
+	}
+
+	if (backc1 <= backf1 && backc2 <= backf2)
+	{
+		checkforemptylines = false;
+		// preserve a kind of transparent door/lift special effect:
+		if (backc1 < frontc1 || backc2 < frontc2)
+		{
+			if (!seg->sidedef->toptexture)
+				return false;
+		}
+		if (backf1 > frontf1 || backf2 > frontf2)
+		{
+			if (!seg->sidedef->bottomtexture)
+				return false;
+		}
+		if (abacksector->ceilingpic == skyflatnum && afrontsector->ceilingpic == skyflatnum)
+			return false;
+
+		if (abacksector->floorpic == skyflatnum && afrontsector->floorpic == skyflatnum)
+			return false;
+
+		return true;
+	}
+
+	if (backc1 != frontc1 || backc2 != frontc2
+		|| backf1 != frontf1 || backf2 != frontf2)
 		{
 			checkforemptylines = false;
 			return false;
 		}
-	}
-
-	if (!bothfloorssky) {
-		if (backf1 != frontf1 || backf2 != frontf2)
-		{
-			checkforemptylines = false;
-			return false;
-		}
-	}
 
 	return false;
 }
@@ -2023,17 +2486,15 @@ static boolean CheckClip(seg_t * seg, sector_t * afrontsector, sector_t * abacks
 
 // hw_newend is one past the last valid seg
 static cliprange_t *   hw_newend;
-static cliprange_t     gl_solidsegs[MAXSEGS];
+static cliprange_t     gr_solidsegs[MAXSEGS];
 
-// needs fix: walls are incorrectly clipped one column less
-static consvar_t cv_glclipwalls = CVAR_INIT ("gr_clipwalls", "Off", 0, CV_OnOff, NULL);
 
 static void printsolidsegs(void)
 {
 	cliprange_t *       start;
-	if (!hw_newend)
+	if (!hw_newend || cv_grbeta.value != 2)
 		return;
-	for (start = gl_solidsegs;start != hw_newend;start++)
+	for (start = gr_solidsegs;start != hw_newend;start++)
 	{
 		CONS_Debug(DBG_RENDER, "%d-%d|",start->first,start->last);
 	}
@@ -2051,7 +2512,7 @@ static void HWR_ClipSolidWallSegment(INT32 first, INT32 last)
 
 	// Find the first range that touches the range
 	//  (adjacent pixels are touching).
-	start = gl_solidsegs;
+	start = gr_solidsegs;
 	while (start->last < first-1)
 		start++;
 
@@ -2079,14 +2540,14 @@ static void HWR_ClipSolidWallSegment(INT32 first, INT32 last)
 		}
 
 		// There is a fragment above *start.
-		if (!cv_glclipwalls.value)
+		if (!cv_grclipwalls.value)
 		{
 			if (!poorhack) HWR_StoreWallRange(first, last);
 			poorhack = true;
 		}
 		else
 		{
-			highfrac = HWR_ClipViewSegment(start->first+1, (polyvertex_t *)gl_curline->pv1, (polyvertex_t *)gl_curline->pv2);
+			highfrac = HWR_ClipViewSegment(start->first+1, (polyvertex_t *)gr_curline->pv1, (polyvertex_t *)gr_curline->pv2);
 			HWR_StoreWallRange(0, highfrac);
 		}
 		// Now adjust the clip size.
@@ -2103,15 +2564,15 @@ static void HWR_ClipSolidWallSegment(INT32 first, INT32 last)
 	while (last >= (next+1)->first-1)
 	{
 		// There is a fragment between two posts.
-		if (!cv_glclipwalls.value)
+		if (!cv_grclipwalls.value)
 		{
 			if (!poorhack) HWR_StoreWallRange(first,last);
 			poorhack = true;
 		}
 		else
 		{
-			lowfrac  = HWR_ClipViewSegment(next->last-1, (polyvertex_t *)gl_curline->pv1, (polyvertex_t *)gl_curline->pv2);
-			highfrac = HWR_ClipViewSegment((next+1)->first+1, (polyvertex_t *)gl_curline->pv1, (polyvertex_t *)gl_curline->pv2);
+			lowfrac  = HWR_ClipViewSegment(next->last-1, (polyvertex_t *)gr_curline->pv1, (polyvertex_t *)gr_curline->pv2);
+			highfrac = HWR_ClipViewSegment((next+1)->first+1, (polyvertex_t *)gr_curline->pv1, (polyvertex_t *)gr_curline->pv2);
 			HWR_StoreWallRange(lowfrac, highfrac);
 		}
 		next++;
@@ -2127,7 +2588,7 @@ static void HWR_ClipSolidWallSegment(INT32 first, INT32 last)
 
 	if (first == next->first+1) // 1 line texture
 	{
-		if (!cv_glclipwalls.value)
+		if (!cv_grclipwalls.value)
 		{
 			if (!poorhack) HWR_StoreWallRange(first,last);
 			poorhack = true;
@@ -2138,14 +2599,14 @@ static void HWR_ClipSolidWallSegment(INT32 first, INT32 last)
 	else
 	{
 	// There is a fragment after *next.
-		if (!cv_glclipwalls.value)
+		if (!cv_grclipwalls.value)
 		{
 			if (!poorhack) HWR_StoreWallRange(first,last);
 			poorhack = true;
 		}
 		else
 		{
-			lowfrac  = HWR_ClipViewSegment(next->last-1, (polyvertex_t *)gl_curline->pv1, (polyvertex_t *)gl_curline->pv2);
+			lowfrac  = HWR_ClipViewSegment(next->last-1, (polyvertex_t *)gr_curline->pv1, (polyvertex_t *)gr_curline->pv2);
 			HWR_StoreWallRange(lowfrac, 1);
 		}
 	}
@@ -2186,7 +2647,7 @@ static void HWR_ClipPassWallSegment(INT32 first, INT32 last)
 
 	// Find the first range that touches the range
 	//  (adjacent pixels are touching).
-	start = gl_solidsegs;
+	start = gr_solidsegs;
 	while (start->last < first - 1)
 		start++;
 
@@ -2200,7 +2661,7 @@ static void HWR_ClipPassWallSegment(INT32 first, INT32 last)
 		}
 
 		// There is a fragment above *start.
-		if (!cv_glclipwalls.value)
+		if (!cv_grclipwalls.value)
 		{	//20/08/99: Changed by Hurdler (taken from faB's code)
 			if (!poorhack) HWR_StoreWallRange(0, 1);
 			poorhack = true;
@@ -2208,8 +2669,8 @@ static void HWR_ClipPassWallSegment(INT32 first, INT32 last)
 		else
 		{
 			highfrac = HWR_ClipViewSegment(min(start->first + 1,
-				start->last), (polyvertex_t *)gl_curline->pv1,
-				(polyvertex_t *)gl_curline->pv2);
+				start->last), (polyvertex_t *)gr_curline->pv1,
+				(polyvertex_t *)gr_curline->pv2);
 			HWR_StoreWallRange(0, highfrac);
 		}
 	}
@@ -2221,15 +2682,15 @@ static void HWR_ClipPassWallSegment(INT32 first, INT32 last)
 	while (last >= (start+1)->first-1)
 	{
 		// There is a fragment between two posts.
-		if (!cv_glclipwalls.value)
+		if (!cv_grclipwalls.value)
 		{
 			if (!poorhack) HWR_StoreWallRange(0, 1);
 			poorhack = true;
 		}
 		else
 		{
-			lowfrac  = HWR_ClipViewSegment(max(start->last-1,start->first), (polyvertex_t *)gl_curline->pv1, (polyvertex_t *)gl_curline->pv2);
-			highfrac = HWR_ClipViewSegment(min((start+1)->first+1,(start+1)->last), (polyvertex_t *)gl_curline->pv1, (polyvertex_t *)gl_curline->pv2);
+			lowfrac  = HWR_ClipViewSegment(max(start->last-1,start->first), (polyvertex_t *)gr_curline->pv1, (polyvertex_t *)gr_curline->pv2);
+			highfrac = HWR_ClipViewSegment(min((start+1)->first+1,(start+1)->last), (polyvertex_t *)gr_curline->pv1, (polyvertex_t *)gr_curline->pv2);
 			HWR_StoreWallRange(lowfrac, highfrac);
 		}
 		start++;
@@ -2240,7 +2701,7 @@ static void HWR_ClipPassWallSegment(INT32 first, INT32 last)
 
 	if (first == start->first+1) // 1 line texture
 	{
-		if (!cv_glclipwalls.value)
+		if (!cv_grclipwalls.value)
 		{
 			if (!poorhack) HWR_StoreWallRange(0, 1);
 			poorhack = true;
@@ -2251,7 +2712,7 @@ static void HWR_ClipPassWallSegment(INT32 first, INT32 last)
 	else
 	{
 		// There is a fragment after *next.
-		if (!cv_glclipwalls.value)
+		if (!cv_grclipwalls.value)
 		{
 			if (!poorhack) HWR_StoreWallRange(0,1);
 			poorhack = true;
@@ -2259,8 +2720,8 @@ static void HWR_ClipPassWallSegment(INT32 first, INT32 last)
 		else
 		{
 			lowfrac = HWR_ClipViewSegment(max(start->last - 1,
-				start->first), (polyvertex_t *)gl_curline->pv1,
-				(polyvertex_t *)gl_curline->pv2);
+				start->first), (polyvertex_t *)gr_curline->pv1,
+				(polyvertex_t *)gr_curline->pv2);
 			HWR_StoreWallRange(lowfrac, 1);
 		}
 	}
@@ -2275,7 +2736,7 @@ static boolean HWR_ClipToSolidSegs(INT32 first, INT32 last)
 
 	// Find the first range that touches the range
 	//  (adjacent pixels are touching).
-	start = gl_solidsegs;
+	start = gr_solidsegs;
 	while (start->last < first-1)
 		start++;
 
@@ -2294,17 +2755,17 @@ static boolean HWR_ClipToSolidSegs(INT32 first, INT32 last)
 //
 static void HWR_ClearClipSegs(void)
 {
-	gl_solidsegs[0].first = -0x7fffffff;
-	gl_solidsegs[0].last = -1;
-	gl_solidsegs[1].first = vid.width; //viewwidth;
-	gl_solidsegs[1].last = 0x7fffffff;
-	hw_newend = gl_solidsegs+2;
+	gr_solidsegs[0].first = -0x7fffffff;
+	gr_solidsegs[0].last = -1;
+	gr_solidsegs[1].first = vid.width; //viewwidth;
+	gr_solidsegs[1].last = 0x7fffffff;
+	hw_newend = gr_solidsegs+2;
 }
 #endif // NEWCLIP
 
 // -----------------+
 // HWR_AddLine      : Clips the given segment and adds any visible pieces to the line list.
-// Notes            : gl_cursectorlight is set to the current subsector -> sector -> light value
+// Notes            : gr_cursectorlight is set to the current subsector -> sector -> light value
 //                  : (it may be mixed with the wall's own flat colour in the future ...)
 // -----------------+
 static void HWR_AddLine(seg_t * line)
@@ -2313,26 +2774,27 @@ static void HWR_AddLine(seg_t * line)
 #ifndef NEWCLIP
 	INT32 x1, x2;
 	angle_t span, tspan;
-	boolean bothceilingssky = false, bothfloorssky = false;
 #endif
 
 	// SoM: Backsector needs to be run through R_FakeFlat
 	static sector_t tempsec;
 
 	fixed_t v1x, v1y, v2x, v2y; // the seg's vertexes as fixed_t
+#ifdef POLYOBJECTS
 	if (line->polyseg && !(line->polyseg->flags & POF_RENDERSIDES))
 		return;
+#endif
 
-	gl_curline = line;
+	gr_curline = line;
 
-	v1x = FLOAT_TO_FIXED(((polyvertex_t *)gl_curline->pv1)->x);
-	v1y = FLOAT_TO_FIXED(((polyvertex_t *)gl_curline->pv1)->y);
-	v2x = FLOAT_TO_FIXED(((polyvertex_t *)gl_curline->pv2)->x);
-	v2y = FLOAT_TO_FIXED(((polyvertex_t *)gl_curline->pv2)->y);
+	v1x = FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv1)->x);
+	v1y = FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv1)->y);
+	v2x = FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv2)->x);
+	v2y = FLOAT_TO_FIXED(((polyvertex_t *)gr_curline->pv2)->y);
 
 	// OPTIMIZE: quickly reject orthogonal back sides.
-	angle1 = R_PointToAngle64(v1x, v1y);
-	angle2 = R_PointToAngle64(v2x, v2y);
+	angle1 = R_PointToAngle(v1x, v1y);
+	angle2 = R_PointToAngle(v2x, v2y);
 
 #ifdef NEWCLIP
 	 // PrBoom: Back side, i.e. backface culling - read: endAngle >= startAngle!
@@ -2360,27 +2822,27 @@ static void HWR_AddLine(seg_t * line)
 	angle1 -= dup_viewangle;
 	angle2 -= dup_viewangle;
 
-	tspan = angle1 + gl_clipangle;
-	if (tspan > 2*gl_clipangle)
+	tspan = angle1 + gr_clipangle;
+	if (tspan > 2*gr_clipangle)
 	{
-		tspan -= 2*gl_clipangle;
+		tspan -= 2*gr_clipangle;
 
 		// Totally off the left edge?
 		if (tspan >= span)
 			return;
 
-		angle1 = gl_clipangle;
+		angle1 = gr_clipangle;
 	}
-	tspan = gl_clipangle - angle2;
-	if (tspan > 2*gl_clipangle)
+	tspan = gr_clipangle - angle2;
+	if (tspan > 2*gr_clipangle)
 	{
-		tspan -= 2*gl_clipangle;
+		tspan -= 2*gr_clipangle;
 
 		// Totally off the left edge?
 		if (tspan >= span)
 			return;
 
-		angle2 = (angle_t)-(signed)gl_clipangle;
+		angle2 = (angle_t)-(signed)gr_clipangle;
 	}
 
 #if 0
@@ -2388,23 +2850,23 @@ static void HWR_AddLine(seg_t * line)
 		float fx1,fx2,fy1,fy2;
 		//BP: test with a better projection than viewangletox[R_PointToAngle(angle)]
 		// do not enable this at release 4 mul and 2 div
-		fx1 = ((polyvertex_t *)(line->pv1))->x-gl_viewx;
-		fy1 = ((polyvertex_t *)(line->pv1))->y-gl_viewy;
-		fy2 = (fx1 * gl_viewcos + fy1 * gl_viewsin);
+		fx1 = ((polyvertex_t *)(line->pv1))->x-gr_viewx;
+		fy1 = ((polyvertex_t *)(line->pv1))->y-gr_viewy;
+		fy2 = (fx1 * gr_viewcos + fy1 * gr_viewsin);
 		if (fy2 < 0)
 			// the point is back
 			fx1 = 0;
 		else
-			fx1 = gl_windowcenterx + (fx1 * gl_viewsin - fy1 * gl_viewcos) * gl_centerx / fy2;
+			fx1 = gr_windowcenterx + (fx1 * gr_viewsin - fy1 * gr_viewcos) * gr_centerx / fy2;
 
-		fx2 = ((polyvertex_t *)(line->pv2))->x-gl_viewx;
-		fy2 = ((polyvertex_t *)(line->pv2))->y-gl_viewy;
-		fy1 = (fx2 * gl_viewcos + fy2 * gl_viewsin);
+		fx2 = ((polyvertex_t *)(line->pv2))->x-gr_viewx;
+		fy2 = ((polyvertex_t *)(line->pv2))->y-gr_viewy;
+		fy1 = (fx2 * gr_viewcos + fy2 * gr_viewsin);
 		if (fy1 < 0)
 			// the point is back
 			fx2 = vid.width;
 		else
-			fx2 = gl_windowcenterx + (fx2 * gl_viewsin - fy2 * gl_viewcos) * gl_centerx / fy1;
+			fx2 = gr_windowcenterx + (fx2 * gr_viewsin - fy2 * gr_viewcos) * gr_centerx / fy1;
 
 		x1 = fx1+0.5f;
 		x2 = fx2+0.5f;
@@ -2415,8 +2877,8 @@ static void HWR_AddLine(seg_t * line)
 	angle1 = (angle1+ANGLE_90)>>ANGLETOFINESHIFT;
 	angle2 = (angle2+ANGLE_90)>>ANGLETOFINESHIFT;
 
-	x1 = gl_viewangletox[angle1];
-	x2 = gl_viewangletox[angle2];
+	x1 = gr_viewangletox[angle1];
+	x2 = gr_viewangletox[angle2];
 #endif
 	// Does not cross a pixel?
 //	if (x1 == x2)
@@ -2428,7 +2890,7 @@ static void HWR_AddLine(seg_t * line)
 */
 #endif
 
-	gl_backsector = line->backsector;
+	gr_backsector = line->backsector;
 
 #ifdef NEWCLIP
 	if (!line->backsector)
@@ -2437,28 +2899,8 @@ static void HWR_AddLine(seg_t * line)
     }
     else
     {
-		boolean bothceilingssky = false, bothfloorssky = false;
-
-		gl_backsector = R_FakeFlat(gl_backsector, &tempsec, NULL, NULL, true);
-
-		if (gl_backsector->ceilingpic == skyflatnum && gl_frontsector->ceilingpic == skyflatnum)
-			bothceilingssky = true;
-		if (gl_backsector->floorpic == skyflatnum && gl_frontsector->floorpic == skyflatnum)
-			bothfloorssky = true;
-
-		if (bothceilingssky && bothfloorssky) // everything's sky? let's save us a bit of time then
-		{
-			if (!line->polyseg &&
-				!line->sidedef->midtexture
-				&& ((!gl_frontsector->ffloors && !gl_backsector->ffloors)
-					|| Tag_Compare(&gl_frontsector->tags, &gl_backsector->tags)))
-				return; // line is empty, don't even bother
-			// treat like wide open window instead
-			HWR_ProcessSeg(); // Doesn't need arguments because they're defined globally :D
-			return;
-		}
-
-		if (CheckClip(line, gl_frontsector, gl_backsector))
+		gr_backsector = R_FakeFlat(gr_backsector, &tempsec, NULL, NULL, true);
+		if (CheckClip(line, gr_frontsector, gr_backsector))
 		{
 			gld_clipper_SafeAddClipRange(angle2, angle1);
 			checkforemptylines = false;
@@ -2467,7 +2909,7 @@ static void HWR_AddLine(seg_t * line)
 		// Identical floor and ceiling on both sides,
 		//  identical light levels on both sides,
 		//  and no middle texture.
-		if (checkforemptylines && R_IsEmptyLine(line, gl_frontsector, gl_backsector))
+		if (checkforemptylines && R_IsEmptyLine(line, gr_frontsector, gr_backsector))
 			return;
     }
 
@@ -2475,99 +2917,77 @@ static void HWR_AddLine(seg_t * line)
 	return;
 #else
 	// Single sided line?
-	if (!gl_backsector)
+	if (!gr_backsector)
 		goto clipsolid;
 
-	gl_backsector = R_FakeFlat(gl_backsector, &tempsec, NULL, NULL, true);
+	gr_backsector = R_FakeFlat(gr_backsector, &tempsec, NULL, NULL, true);
 
-	if (gl_backsector->ceilingpic == skyflatnum && gl_frontsector->ceilingpic == skyflatnum)
-		bothceilingssky = true;
-	if (gl_backsector->floorpic == skyflatnum && gl_frontsector->floorpic == skyflatnum)
-		bothfloorssky = true;
-
-	if (bothceilingssky && bothfloorssky) // everything's sky? let's save us a bit of time then
-	{
-		if (!line->polyseg &&
-			!line->sidedef->midtexture
-			&& ((!gl_frontsector->ffloors && !gl_backsector->ffloors)
-				|| Tag_Compare(&gl_frontsector->tags, &gl_backsector->tags)))
-			return; // line is empty, don't even bother
-
-		goto clippass; // treat like wide open window instead
-	}
-
-	if (gl_frontsector->f_slope || gl_frontsector->c_slope || gl_backsector->f_slope || gl_backsector->c_slope)
+#ifdef ESLOPE
+	if (gr_frontsector->f_slope || gr_frontsector->c_slope || gr_backsector->f_slope || gr_backsector->c_slope)
 	{
 		fixed_t frontf1,frontf2, frontc1, frontc2; // front floor/ceiling ends
 		fixed_t backf1, backf2, backc1, backc2; // back floor ceiling ends
 
 #define SLOPEPARAMS(slope, end1, end2, normalheight) \
-		end1 = P_GetZAt(slope, v1x, v1y, normalheight); \
-		end2 = P_GetZAt(slope, v2x, v2y, normalheight);
+		if (slope) { \
+			end1 = P_GetZAt(slope, v1x, v1y); \
+			end2 = P_GetZAt(slope, v2x, v2y); \
+		} else \
+			end1 = end2 = normalheight;
 
-		SLOPEPARAMS(gl_frontsector->f_slope, frontf1, frontf2, gl_frontsector->  floorheight)
-		SLOPEPARAMS(gl_frontsector->c_slope, frontc1, frontc2, gl_frontsector->ceilingheight)
-		SLOPEPARAMS( gl_backsector->f_slope,  backf1,  backf2,  gl_backsector->  floorheight)
-		SLOPEPARAMS( gl_backsector->c_slope,  backc1,  backc2,  gl_backsector->ceilingheight)
+		SLOPEPARAMS(gr_frontsector->f_slope, frontf1, frontf2, gr_frontsector->floorheight)
+		SLOPEPARAMS(gr_frontsector->c_slope, frontc1, frontc2, gr_frontsector->ceilingheight)
+		SLOPEPARAMS( gr_backsector->f_slope, backf1,  backf2,  gr_backsector->floorheight)
+		SLOPEPARAMS( gr_backsector->c_slope, backc1,  backc2,  gr_backsector->ceilingheight)
 #undef SLOPEPARAMS
-		// if both ceilings are skies, consider it always "open"
-		// same for floors
-		if (!bothceilingssky && !bothfloorssky)
-		{
-			// Closed door.
-			if ((backc1 <= frontf1 && backc2 <= frontf2)
-				|| (backf1 >= frontc1 && backf2 >= frontc2))
-			{
-				goto clipsolid;
-			}
 
-			// Check for automap fix.
-			if (backc1 <= backf1 && backc2 <= backf2
-			&& ((backc1 >= frontc1 && backc2 >= frontc2) || gl_curline->sidedef->toptexture)
-			&& ((backf1 <= frontf1 && backf2 >= frontf2) || gl_curline->sidedef->bottomtexture))
-				goto clipsolid;
+		// Closed door.
+		if ((backc1 <= frontf1 && backc2 <= frontf2)
+			|| (backf1 >= frontc1 && backf2 >= frontc2))
+		{
+			goto clipsolid;
 		}
 
+		// Check for automap fix.
+		if (backc1 <= backf1 && backc2 <= backf2
+		&& ((backc1 >= frontc1 && backc2 >= frontc2) || gr_curline->sidedef->toptexture)
+		&& ((backf1 <= frontf1 && backf2 >= frontf2) || gr_curline->sidedef->bottomtexture)
+		&& (gr_backsector->ceilingpic != skyflatnum || gr_frontsector->ceilingpic != skyflatnum))
+			goto clipsolid;
+
 		// Window.
-		if (!bothceilingssky) // ceilings are always the "same" when sky
-			if (backc1 != frontc1 || backc2 != frontc2)
-				goto clippass;
-		if (!bothfloorssky)	// floors are always the "same" when sky
-			if (backf1 != frontf1 || backf2 != frontf2)
-				goto clippass;
+		if (backc1 != frontc1 || backc2 != frontc2
+			|| backf1 != frontf1 || backf2 != frontf2)
+		{
+			goto clippass;
+		}
 	}
 	else
+#endif
 	{
-		// if both ceilings are skies, consider it always "open"
-		// same for floors
-		if (!bothceilingssky && !bothfloorssky)
-		{
-			// Closed door.
-			if (gl_backsector->ceilingheight <= gl_frontsector->floorheight ||
-				gl_backsector->floorheight >= gl_frontsector->ceilingheight)
-				goto clipsolid;
+		// Closed door.
+		if (gr_backsector->ceilingheight <= gr_frontsector->floorheight ||
+			gr_backsector->floorheight >= gr_frontsector->ceilingheight)
+			goto clipsolid;
 
-			// Check for automap fix.
-			if (gl_backsector->ceilingheight <= gl_backsector->floorheight
-			&& ((gl_backsector->ceilingheight >= gl_frontsector->ceilingheight) || gl_curline->sidedef->toptexture)
-			&& ((gl_backsector->floorheight <= gl_backsector->floorheight) || gl_curline->sidedef->bottomtexture))
-				goto clipsolid;
-		}
+		// Check for automap fix.
+		if (gr_backsector->ceilingheight <= gr_backsector->floorheight
+		&& ((gr_backsector->ceilingheight >= gr_frontsector->ceilingheight) || gr_curline->sidedef->toptexture)
+		&& ((gr_backsector->floorheight <= gr_backsector->floorheight) || gr_curline->sidedef->bottomtexture)
+		&& (gr_backsector->ceilingpic != skyflatnum || gr_frontsector->ceilingpic != skyflatnum))
+			goto clipsolid;
 
 		// Window.
-		if (!bothceilingssky) // ceilings are always the "same" when sky
-			if (gl_backsector->ceilingheight != gl_frontsector->ceilingheight)
-				goto clippass;
-		if (!bothfloorssky)	// floors are always the "same" when sky
-			if (gl_backsector->floorheight != gl_frontsector->floorheight)
-				goto clippass;
+		if (gr_backsector->ceilingheight != gr_frontsector->ceilingheight ||
+			gr_backsector->floorheight != gr_frontsector->floorheight)
+			goto clippass;
 	}
 
 	// Reject empty lines used for triggers and special events.
 	// Identical floor and ceiling on both sides,
 	//  identical light levels on both sides,
 	//  and no middle texture.
-	if (R_IsEmptyLine(gl_curline, gl_frontsector, gl_backsector))
+	if (R_IsEmptyLine(gr_curline, gr_frontsector, gr_backsector))
 		return;
 
 clippass:
@@ -2625,8 +3045,8 @@ static boolean HWR_CheckBBox(fixed_t *bspcoord)
 	py2 = bspcoord[checkcoord[boxpos][3]];
 
 #ifdef NEWCLIP
-	angle1 = R_PointToAngle64(px1, py1);
-	angle2 = R_PointToAngle64(px2, py2);
+	angle1 = R_PointToAngle(px1, py1);
+	angle2 = R_PointToAngle(px2, py2);
 	return gld_clipper_SafeCheckRange(angle2, angle1);
 #else
 	// check clip list for an open space
@@ -2639,28 +3059,28 @@ static boolean HWR_CheckBBox(fixed_t *bspcoord)
 	if (span >= ANGLE_180)
 		return true;
 
-	tspan = angle1 + gl_clipangle;
+	tspan = angle1 + gr_clipangle;
 
-	if (tspan > 2*gl_clipangle)
+	if (tspan > 2*gr_clipangle)
 	{
-		tspan -= 2*gl_clipangle;
+		tspan -= 2*gr_clipangle;
 
 		// Totally off the left edge?
 		if (tspan >= span)
 			return false;
 
-		angle1 = gl_clipangle;
+		angle1 = gr_clipangle;
 	}
-	tspan = gl_clipangle - angle2;
-	if (tspan > 2*gl_clipangle)
+	tspan = gr_clipangle - angle2;
+	if (tspan > 2*gr_clipangle)
 	{
-		tspan -= 2*gl_clipangle;
+		tspan -= 2*gr_clipangle;
 
 		// Totally off the left edge?
 		if (tspan >= span)
 			return false;
 
-		angle2 = (angle_t)-(signed)gl_clipangle;
+		angle2 = (angle_t)-(signed)gr_clipangle;
 	}
 
 	// Find the first clippost
@@ -2668,8 +3088,8 @@ static boolean HWR_CheckBBox(fixed_t *bspcoord)
 	//  (adjacent pixels are touching).
 	angle1 = (angle1+ANGLE_90)>>ANGLETOFINESHIFT;
 	angle2 = (angle2+ANGLE_90)>>ANGLETOFINESHIFT;
-	sx1 = gl_viewangletox[angle1];
-	sx2 = gl_viewangletox[angle2];
+	sx1 = gr_viewangletox[angle1];
+	sx2 = gr_viewangletox[angle2];
 
 	// Does not cross a pixel.
 	if (sx1 == sx2)
@@ -2678,6 +3098,8 @@ static boolean HWR_CheckBBox(fixed_t *bspcoord)
 	return HWR_ClipToSolidSegs(sx1, sx2 - 1);
 #endif
 }
+
+#ifdef POLYOBJECTS
 
 //
 // HWR_AddPolyObjectSegs
@@ -2689,7 +3111,7 @@ static boolean HWR_CheckBBox(fixed_t *bspcoord)
 static inline void HWR_AddPolyObjectSegs(void)
 {
 	size_t i, j;
-	seg_t *gl_fakeline = Z_Calloc(sizeof(seg_t), PU_STATIC, NULL);
+	seg_t *gr_fakeline = Z_Calloc(sizeof(seg_t), PU_STATIC, NULL);
 	polyvertex_t *pv1 = Z_Calloc(sizeof(polyvertex_t), PU_STATIC, NULL);
 	polyvertex_t *pv2 = Z_Calloc(sizeof(polyvertex_t), PU_STATIC, NULL);
 
@@ -2700,55 +3122,56 @@ static inline void HWR_AddPolyObjectSegs(void)
 		for (j = 0; j < po_ptrs[i]->segCount; ++j)
 		{
 			// Copy the info of a polyobject's seg, then convert it to OpenGL floating point
-			M_Memcpy(gl_fakeline, po_ptrs[i]->segs[j], sizeof(seg_t));
+			M_Memcpy(gr_fakeline, po_ptrs[i]->segs[j], sizeof(seg_t));
 
 			// Now convert the line to float and add it to be rendered
-			pv1->x = FIXED_TO_FLOAT(gl_fakeline->v1->x);
-			pv1->y = FIXED_TO_FLOAT(gl_fakeline->v1->y);
-			pv2->x = FIXED_TO_FLOAT(gl_fakeline->v2->x);
-			pv2->y = FIXED_TO_FLOAT(gl_fakeline->v2->y);
+			pv1->x = FIXED_TO_FLOAT(gr_fakeline->v1->x);
+			pv1->y = FIXED_TO_FLOAT(gr_fakeline->v1->y);
+			pv2->x = FIXED_TO_FLOAT(gr_fakeline->v2->x);
+			pv2->y = FIXED_TO_FLOAT(gr_fakeline->v2->y);
 
-			gl_fakeline->pv1 = pv1;
-			gl_fakeline->pv2 = pv2;
+			gr_fakeline->pv1 = pv1;
+			gr_fakeline->pv2 = pv2;
 
-			HWR_AddLine(gl_fakeline);
+			HWR_AddLine(gr_fakeline);
 		}
 	}
 
 	// Free temporary data no longer needed
 	Z_Free(pv2);
 	Z_Free(pv1);
-	Z_Free(gl_fakeline);
+	Z_Free(gr_fakeline);
 }
 
+#ifdef POLYOBJECTS_PLANES
 static void HWR_RenderPolyObjectPlane(polyobj_t *polysector, boolean isceiling, fixed_t fixedheight,
-									FBITFIELD blendmode, UINT8 lightlevel, levelflat_t *levelflat, sector_t *FOFsector,
+									FBITFIELD blendmode, UINT8 lightlevel, lumpnum_t lumpnum, sector_t *FOFsector,
 									UINT8 alpha, extracolormap_t *planecolormap)
 {
-	FSurfaceInfo Surf;
-	FOutVector *v3d;
-	INT32 shader = -1;
-
-	size_t nrPlaneVerts = polysector->numVertices;
-	INT32 i;
-
-	float height = FIXED_TO_FLOAT(fixedheight); // constant y for all points on the convex flat polygon
-	float flatxref, flatyref;
-	float fflatwidth = 64.0f, fflatheight = 64.0f;
-	INT32 flatflag = 63;
-
-	boolean texflat = false;
-
+	float           height; //constant y for all points on the convex flat polygon
+	FOutVector      *v3d;
+	INT32             i;
+	float           flatxref,flatyref;
+	float fflatsize;
+	INT32 flatflag;
+	size_t len;
 	float scrollx = 0.0f, scrolly = 0.0f;
 	angle_t angle = 0;
-	fixed_t tempxs, tempyt;
+	FSurfaceInfo    Surf;
+	fixed_t tempxsow, tempytow;
+	size_t nrPlaneVerts;
 
 	static FOutVector *planeVerts = NULL;
 	static UINT16 numAllocedPlaneVerts = 0;
 
-	if (nrPlaneVerts < 3)   // Not even a triangle?
+	nrPlaneVerts = polysector->numVertices;
+
+	height = FIXED_TO_FLOAT(fixedheight);
+
+	if (nrPlaneVerts < 3)   //not even a triangle ?
 		return;
-	else if (nrPlaneVerts > (size_t)UINT16_MAX) // FIXME: exceeds plVerts size
+
+	if (nrPlaneVerts > UINT16_MAX) // FIXME: exceeds plVerts size
 	{
 		CONS_Debug(DBG_RENDER, "polygon size of %s exceeds max value of %d vertices\n", sizeu1(nrPlaneVerts), UINT16_MAX);
 		return;
@@ -2762,62 +3185,43 @@ static void HWR_RenderPolyObjectPlane(polyobj_t *polysector, boolean isceiling, 
 		Z_Malloc(numAllocedPlaneVerts * sizeof (FOutVector), PU_LEVEL, &planeVerts);
 	}
 
-	// set texture for polygon
-	if (levelflat != NULL)
+	len = W_LumpLength(lumpnum);
+
+	switch (len)
 	{
-		if (levelflat->type == LEVELFLAT_FLAT)
-		{
-			size_t len = W_LumpLength(levelflat->u.flat.lumpnum);
-			switch (len)
-			{
-				case 4194304: // 2048x2048 lump
-					fflatwidth = fflatheight = 2048.0f;
-					break;
-				case 1048576: // 1024x1024 lump
-					fflatwidth = fflatheight = 1024.0f;
-					break;
-				case 262144:// 512x512 lump
-					fflatwidth = fflatheight = 512.0f;
-					break;
-				case 65536: // 256x256 lump
-					fflatwidth = fflatheight = 256.0f;
-					break;
-				case 16384: // 128x128 lump
-					fflatwidth = fflatheight = 128.0f;
-					break;
-				case 1024: // 32x32 lump
-					fflatwidth = fflatheight = 32.0f;
-					break;
-				default: // 64x64 lump
-					fflatwidth = fflatheight = 64.0f;
-					break;
-			}
-			flatflag = ((INT32)fflatwidth)-1;
-		}
-		else
-		{
-			if (levelflat->type == LEVELFLAT_TEXTURE)
-			{
-				fflatwidth = textures[levelflat->u.texture.num]->width;
-				fflatheight = textures[levelflat->u.texture.num]->height;
-			}
-			else if (levelflat->type == LEVELFLAT_PATCH || levelflat->type == LEVELFLAT_PNG)
-			{
-				fflatwidth = levelflat->width;
-				fflatheight = levelflat->height;
-			}
-			texflat = true;
-		}
+		case 4194304: // 2048x2048 lump
+			fflatsize = 2048.0f;
+			flatflag = 2047;
+			break;
+		case 1048576: // 1024x1024 lump
+			fflatsize = 1024.0f;
+			flatflag = 1023;
+			break;
+		case 262144:// 512x512 lump
+			fflatsize = 512.0f;
+			flatflag = 511;
+			break;
+		case 65536: // 256x256 lump
+			fflatsize = 256.0f;
+			flatflag = 255;
+			break;
+		case 16384: // 128x128 lump
+			fflatsize = 128.0f;
+			flatflag = 127;
+			break;
+		case 1024: // 32x32 lump
+			fflatsize = 32.0f;
+			flatflag = 31;
+			break;
+		default: // 64x64 lump
+			fflatsize = 64.0f;
+			flatflag = 63;
+			break;
 	}
-	else // set no texture
-		HWR_SetCurrentTexture(NULL);
 
 	// reference point for flat texture coord for each vertex around the polygon
-	flatxref = FIXED_TO_FLOAT(polysector->origVerts[0].x);
-	flatyref = FIXED_TO_FLOAT(polysector->origVerts[0].y);
-
-	flatxref = (float)(((fixed_t)flatxref & (~flatflag)) / fflatwidth);
-	flatyref = (float)(((fixed_t)flatyref & (~flatflag)) / fflatheight);
+	flatxref = (float)(((fixed_t)FIXED_TO_FLOAT(polysector->origVerts[0].x) & (~flatflag)) / fflatsize);
+	flatyref = (float)(((fixed_t)FIXED_TO_FLOAT(polysector->origVerts[0].y) & (~flatflag)) / fflatsize);
 
 	// transform
 	v3d = planeVerts;
@@ -2826,73 +3230,62 @@ static void HWR_RenderPolyObjectPlane(polyobj_t *polysector, boolean isceiling, 
 	{
 		if (!isceiling) // it's a floor
 		{
-			scrollx = FIXED_TO_FLOAT(FOFsector->floor_xoffs)/fflatwidth;
-			scrolly = FIXED_TO_FLOAT(FOFsector->floor_yoffs)/fflatheight;
-			angle = FOFsector->floorpic_angle;
+			scrollx = FIXED_TO_FLOAT(FOFsector->floor_xoffs)/fflatsize;
+			scrolly = FIXED_TO_FLOAT(FOFsector->floor_yoffs)/fflatsize;
+			angle = FOFsector->floorpic_angle>>ANGLETOFINESHIFT;
 		}
 		else // it's a ceiling
 		{
-			scrollx = FIXED_TO_FLOAT(FOFsector->ceiling_xoffs)/fflatwidth;
-			scrolly = FIXED_TO_FLOAT(FOFsector->ceiling_yoffs)/fflatheight;
-			angle = FOFsector->ceilingpic_angle;
+			scrollx = FIXED_TO_FLOAT(FOFsector->ceiling_xoffs)/fflatsize;
+			scrolly = FIXED_TO_FLOAT(FOFsector->ceiling_yoffs)/fflatsize;
+			angle = FOFsector->ceilingpic_angle>>ANGLETOFINESHIFT;
 		}
 	}
-	else if (gl_frontsector)
+	else if (gr_frontsector)
 	{
 		if (!isceiling) // it's a floor
 		{
-			scrollx = FIXED_TO_FLOAT(gl_frontsector->floor_xoffs)/fflatwidth;
-			scrolly = FIXED_TO_FLOAT(gl_frontsector->floor_yoffs)/fflatheight;
-			angle = gl_frontsector->floorpic_angle;
+			scrollx = FIXED_TO_FLOAT(gr_frontsector->floor_xoffs)/fflatsize;
+			scrolly = FIXED_TO_FLOAT(gr_frontsector->floor_yoffs)/fflatsize;
+			angle = gr_frontsector->floorpic_angle>>ANGLETOFINESHIFT;
 		}
 		else // it's a ceiling
 		{
-			scrollx = FIXED_TO_FLOAT(gl_frontsector->ceiling_xoffs)/fflatwidth;
-			scrolly = FIXED_TO_FLOAT(gl_frontsector->ceiling_yoffs)/fflatheight;
-			angle = gl_frontsector->ceilingpic_angle;
+			scrollx = FIXED_TO_FLOAT(gr_frontsector->ceiling_xoffs)/fflatsize;
+			scrolly = FIXED_TO_FLOAT(gr_frontsector->ceiling_yoffs)/fflatsize;
+			angle = gr_frontsector->ceilingpic_angle>>ANGLETOFINESHIFT;
 		}
 	}
 
 	if (angle) // Only needs to be done if there's an altered angle
 	{
-		angle = (InvAngle(angle))>>ANGLETOFINESHIFT;
-
 		// This needs to be done so that it scrolls in a different direction after rotation like software
-		/*tempxs = FLOAT_TO_FIXED(scrollx);
-		tempyt = FLOAT_TO_FIXED(scrolly);
-		scrollx = (FIXED_TO_FLOAT(FixedMul(tempxs, FINECOSINE(angle)) - FixedMul(tempyt, FINESINE(angle))));
-		scrolly = (FIXED_TO_FLOAT(FixedMul(tempxs, FINESINE(angle)) + FixedMul(tempyt, FINECOSINE(angle))));*/
+		tempxsow = FLOAT_TO_FIXED(scrollx);
+		tempytow = FLOAT_TO_FIXED(scrolly);
+		scrollx = (FIXED_TO_FLOAT(FixedMul(tempxsow, FINECOSINE(angle)) - FixedMul(tempytow, FINESINE(angle))));
+		scrolly = (FIXED_TO_FLOAT(FixedMul(tempxsow, FINESINE(angle)) + FixedMul(tempytow, FINECOSINE(angle))));
 
 		// This needs to be done so everything aligns after rotation
 		// It would be done so that rotation is done, THEN the translation, but I couldn't get it to rotate AND scroll like software does
-		tempxs = FLOAT_TO_FIXED(flatxref);
-		tempyt = FLOAT_TO_FIXED(flatyref);
-		flatxref = (FIXED_TO_FLOAT(FixedMul(tempxs, FINECOSINE(angle)) - FixedMul(tempyt, FINESINE(angle))));
-		flatyref = (FIXED_TO_FLOAT(FixedMul(tempxs, FINESINE(angle)) + FixedMul(tempyt, FINECOSINE(angle))));
+		tempxsow = FLOAT_TO_FIXED(flatxref);
+		tempytow = FLOAT_TO_FIXED(flatyref);
+		flatxref = (FIXED_TO_FLOAT(FixedMul(tempxsow, FINECOSINE(angle)) - FixedMul(tempytow, FINESINE(angle))));
+		flatyref = (FIXED_TO_FLOAT(FixedMul(tempxsow, FINESINE(angle)) + FixedMul(tempytow, FINECOSINE(angle))));
 	}
 
 	for (i = 0; i < (INT32)nrPlaneVerts; i++,v3d++)
 	{
-		// Go from the polysector's original vertex locations
-		// Means the flat is offset based on the original vertex locations
-		if (texflat)
-		{
-			v3d->s = (float)(FIXED_TO_FLOAT(polysector->origVerts[i].x) / fflatwidth) + scrollx;
-			v3d->t = -(float)(FIXED_TO_FLOAT(polysector->origVerts[i].y) / fflatheight) + scrolly;
-		}
-		else
-		{
-			v3d->s = (float)((FIXED_TO_FLOAT(polysector->origVerts[i].x) / fflatwidth) - flatxref + scrollx);
-			v3d->t = (float)(flatyref - (FIXED_TO_FLOAT(polysector->origVerts[i].y) / fflatheight) + scrolly);
-		}
+		// Hurdler: add scrolling texture on floor/ceiling
+		v3d->sow = (float)((FIXED_TO_FLOAT(polysector->origVerts[i].x) / fflatsize) - flatxref + scrollx); // Go from the polysector's original vertex locations
+		v3d->tow = (float)(flatyref - (FIXED_TO_FLOAT(polysector->origVerts[i].y) / fflatsize) + scrolly); // Means the flat is offset based on the original vertex locations
 
 		// Need to rotate before translate
 		if (angle) // Only needs to be done if there's an altered angle
 		{
-			tempxs = FLOAT_TO_FIXED(v3d->s);
-			tempyt = FLOAT_TO_FIXED(v3d->t);
-			v3d->s = (FIXED_TO_FLOAT(FixedMul(tempxs, FINECOSINE(angle)) - FixedMul(tempyt, FINESINE(angle))));
-			v3d->t = (FIXED_TO_FLOAT(FixedMul(tempxs, FINESINE(angle)) + FixedMul(tempyt, FINECOSINE(angle))));
+			tempxsow = FLOAT_TO_FIXED(v3d->sow);
+			tempytow = FLOAT_TO_FIXED(v3d->tow);
+			v3d->sow = (FIXED_TO_FLOAT(FixedMul(tempxsow, FINECOSINE(angle)) - FixedMul(tempytow, FINESINE(angle))));
+			v3d->tow = (FIXED_TO_FLOAT(-FixedMul(tempxsow, FINESINE(angle)) - FixedMul(tempytow, FINECOSINE(angle))));
 		}
 
 		v3d->x = FIXED_TO_FLOAT(polysector->vertices[i]->x);
@@ -2900,30 +3293,27 @@ static void HWR_RenderPolyObjectPlane(polyobj_t *polysector, boolean isceiling, 
 		v3d->z = FIXED_TO_FLOAT(polysector->vertices[i]->y);
 	}
 
-	HWR_Lighting(&Surf, lightlevel, planecolormap);
+
+	if (planecolormap)
+		Surf.FlatColor.rgba = HWR_Lighting(lightlevel, planecolormap->rgba, planecolormap->fadergba, false, true);
+	else
+		Surf.FlatColor.rgba = HWR_Lighting(lightlevel, NORMALFOG, FADEFOG, false, true);
 
 	if (blendmode & PF_Translucent)
 	{
-		Surf.PolyColor.s.alpha = (UINT8)alpha;
-		blendmode |= PF_Modulated|PF_Occlude;
+		Surf.FlatColor.s.alpha = (UINT8)alpha;
+		blendmode |= PF_Modulated|PF_Occlude|PF_Clip;
 	}
 	else
-		blendmode |= PF_Masked|PF_Modulated;
+		blendmode |= PF_Masked|PF_Modulated|PF_Clip;
 
-	if (HWR_UseShader())
-	{
-		shader = SHADER_FLOOR;
-		blendmode |= PF_ColorMapped;
-	}
-
-	HWR_ProcessPolygon(&Surf, planeVerts, nrPlaneVerts, blendmode, shader, false);
+	HWD.pfnDrawPolygon(&Surf, planeVerts, nrPlaneVerts, blendmode);
 }
 
 static void HWR_AddPolyObjectPlanes(void)
 {
 	size_t i;
 	sector_t *polyobjsector;
-	INT32 light = 0;
 
 	// Polyobject Planes need their own function for drawing because they don't have extrasubsectors by themselves
 	// It should be okay because polyobjects should always be convex anyway
@@ -2938,66 +3328,57 @@ static void HWR_AddPolyObjectPlanes(void)
 		if (po_ptrs[i]->translucency >= NUMTRANSMAPS)
 			continue;
 
-		if (polyobjsector->floorheight <= gl_frontsector->ceilingheight
-			&& polyobjsector->floorheight >= gl_frontsector->floorheight
+		if (polyobjsector->floorheight <= gr_frontsector->ceilingheight
+			&& polyobjsector->floorheight >= gr_frontsector->floorheight
 			&& (viewz < polyobjsector->floorheight))
 		{
-			light = R_GetPlaneLight(gl_frontsector, polyobjsector->floorheight, true);
 			if (po_ptrs[i]->translucency > 0)
 			{
 				FSurfaceInfo Surf;
-				FBITFIELD blendmode;
-				memset(&Surf, 0x00, sizeof(Surf));
-				blendmode = HWR_TranstableToAlpha(po_ptrs[i]->translucency, &Surf);
-				HWR_AddTransparentPolyobjectFloor(&levelflats[polyobjsector->floorpic], po_ptrs[i], false, polyobjsector->floorheight,
-													(light == -1 ? gl_frontsector->lightlevel : *gl_frontsector->lightlist[light].lightlevel), Surf.PolyColor.s.alpha, polyobjsector, blendmode, (light == -1 ? gl_frontsector->extra_colormap : *gl_frontsector->lightlist[light].extra_colormap));
+				FBITFIELD blendmode = HWR_TranstableToAlpha(po_ptrs[i]->translucency, &Surf);
+				HWR_AddTransparentPolyobjectFloor(levelflats[polyobjsector->floorpic].lumpnum, po_ptrs[i], false, polyobjsector->floorheight,
+													polyobjsector->lightlevel, Surf.FlatColor.s.alpha, polyobjsector, blendmode, NULL);
 			}
 			else
 			{
-				HWR_GetLevelFlat(&levelflats[polyobjsector->floorpic]);
+				HWR_GetFlat(levelflats[polyobjsector->floorpic].lumpnum);
 				HWR_RenderPolyObjectPlane(po_ptrs[i], false, polyobjsector->floorheight, PF_Occlude,
-										(light == -1 ? gl_frontsector->lightlevel : *gl_frontsector->lightlist[light].lightlevel), &levelflats[polyobjsector->floorpic],
-										polyobjsector, 255, (light == -1 ? gl_frontsector->extra_colormap : *gl_frontsector->lightlist[light].extra_colormap));
+										polyobjsector->lightlevel, levelflats[polyobjsector->floorpic].lumpnum,
+										polyobjsector, 255, NULL);
 			}
 		}
 
-		if (polyobjsector->ceilingheight >= gl_frontsector->floorheight
-			&& polyobjsector->ceilingheight <= gl_frontsector->ceilingheight
+		if (polyobjsector->ceilingheight >= gr_frontsector->floorheight
+			&& polyobjsector->ceilingheight <= gr_frontsector->ceilingheight
 			&& (viewz > polyobjsector->ceilingheight))
 		{
-			light = R_GetPlaneLight(gl_frontsector, polyobjsector->ceilingheight, true);
 			if (po_ptrs[i]->translucency > 0)
 			{
 				FSurfaceInfo Surf;
 				FBITFIELD blendmode;
 				memset(&Surf, 0x00, sizeof(Surf));
 				blendmode = HWR_TranstableToAlpha(po_ptrs[i]->translucency, &Surf);
-				HWR_AddTransparentPolyobjectFloor(&levelflats[polyobjsector->ceilingpic], po_ptrs[i], true, polyobjsector->ceilingheight,
-				                                  (light == -1 ? gl_frontsector->lightlevel : *gl_frontsector->lightlist[light].lightlevel), Surf.PolyColor.s.alpha, polyobjsector, blendmode, (light == -1 ? gl_frontsector->extra_colormap : *gl_frontsector->lightlist[light].extra_colormap));
+				HWR_AddTransparentPolyobjectFloor(levelflats[polyobjsector->ceilingpic].lumpnum, po_ptrs[i], true, polyobjsector->ceilingheight,
+				                                  polyobjsector->lightlevel, Surf.FlatColor.s.alpha, polyobjsector, blendmode, NULL);
 			}
 			else
 			{
-				HWR_GetLevelFlat(&levelflats[polyobjsector->ceilingpic]);
+				HWR_GetFlat(levelflats[polyobjsector->ceilingpic].lumpnum);
 				HWR_RenderPolyObjectPlane(po_ptrs[i], true, polyobjsector->ceilingheight, PF_Occlude,
-				                          (light == -1 ? gl_frontsector->lightlevel : *gl_frontsector->lightlist[light].lightlevel), &levelflats[polyobjsector->ceilingpic],
-				                          polyobjsector, 255, (light == -1 ? gl_frontsector->extra_colormap : *gl_frontsector->lightlist[light].extra_colormap));
+				                          polyobjsector->lightlevel, levelflats[polyobjsector->floorpic].lumpnum,
+				                          polyobjsector, 255, NULL);
 			}
 		}
 	}
 }
-
-static FBITFIELD HWR_RippleBlend(sector_t *sector, ffloor_t *rover, boolean ceiling)
-{
-	(void)sector;
-	(void)ceiling;
-	return /*R_IsRipplePlane(sector, rover, ceiling)*/ (rover->flags & FF_RIPPLE) ? PF_Ripple : 0;
-}
+#endif
+#endif
 
 // -----------------+
 // HWR_Subsector    : Determine floor/ceiling planes.
 //                  : Add sprites of things in sector.
 //                  : Draw one or more line segments.
-// Notes            : Sets gl_cursectorlight to the light of the parent sector, to modulate wall textures
+// Notes            : Sets gr_cursectorlight to the light of the parent sector, to modulate wall textures
 // -----------------+
 static void HWR_Subsector(size_t num)
 {
@@ -3012,7 +3393,6 @@ static void HWR_Subsector(size_t num)
 	INT32 light = 0;
 	extracolormap_t *floorcolormap;
 	extracolormap_t *ceilingcolormap;
-	ffloor_t *rover;
 
 #ifdef PARANOIA //no risk while developing, enough debugging nights!
 	if (num >= addsubsector)
@@ -3030,7 +3410,7 @@ static void HWR_Subsector(size_t num)
 		// subsector
 		sub = &subsectors[num];
 		// sector
-		gl_frontsector = sub->sector;
+		gr_frontsector = sub->sector;
 		// how many linedefs
 		count = sub->numlines;
 		// first line seg
@@ -3040,88 +3420,108 @@ static void HWR_Subsector(size_t num)
 	{
 		// there are no segs but only planes
 		sub = &subsectors[0];
-		gl_frontsector = sub->sector;
+		gr_frontsector = sub->sector;
 		count = 0;
 		line = NULL;
 	}
 
 	//SoM: 4/7/2000: Test to make Boom water work in Hardware mode.
-	gl_frontsector = R_FakeFlat(gl_frontsector, &tempsec, &floorlightlevel,
+	gr_frontsector = R_FakeFlat(gr_frontsector, &tempsec, &floorlightlevel,
 								&ceilinglightlevel, false);
 	//FIXME: Use floorlightlevel and ceilinglightlevel insted of lightlevel.
 
-	floorcolormap = ceilingcolormap = gl_frontsector->extra_colormap;
+	floorcolormap = ceilingcolormap = gr_frontsector->extra_colormap;
 
 	// ------------------------------------------------------------------------
 	// sector lighting, DISABLED because it's done in HWR_StoreWallRange
 	// ------------------------------------------------------------------------
 	/// \todo store a RGBA instead of just intensity, allow coloured sector lighting
 	//light = (FUBYTE)(sub->sector->lightlevel & 0xFF) / 255.0f;
-	//gl_cursectorlight.red   = light;
-	//gl_cursectorlight.green = light;
-	//gl_cursectorlight.blue  = light;
-	//gl_cursectorlight.alpha = light;
+	//gr_cursectorlight.red   = light;
+	//gr_cursectorlight.green = light;
+	//gr_cursectorlight.blue  = light;
+	//gr_cursectorlight.alpha = light;
 
-// ----- end special tricks -----
-	cullFloorHeight   = P_GetSectorFloorZAt  (gl_frontsector, viewx, viewy);
-	cullCeilingHeight = P_GetSectorCeilingZAt(gl_frontsector, viewx, viewy);
-	locFloorHeight    = P_GetSectorFloorZAt  (gl_frontsector, gl_frontsector->soundorg.x, gl_frontsector->soundorg.y);
-	locCeilingHeight  = P_GetSectorCeilingZAt(gl_frontsector, gl_frontsector->soundorg.x, gl_frontsector->soundorg.y);
-
-	if (gl_frontsector->ffloors)
+// ----- for special tricks with HW renderer -----
+	if (gr_frontsector->pseudoSector)
 	{
-		boolean anyMoved = gl_frontsector->moved;
+		cullFloorHeight = locFloorHeight = gr_frontsector->virtualFloorheight;
+		cullCeilingHeight = locCeilingHeight = gr_frontsector->virtualCeilingheight;
+	}
+	else if (gr_frontsector->virtualFloor)
+	{
+		///@TODO Is this whole virtualFloor mess even useful? I don't think it even triggers ever.
+		cullFloorHeight = locFloorHeight = gr_frontsector->virtualFloorheight;
+		if (gr_frontsector->virtualCeiling)
+			cullCeilingHeight = locCeilingHeight = gr_frontsector->virtualCeilingheight;
+		else
+			cullCeilingHeight = locCeilingHeight = gr_frontsector->ceilingheight;
+	}
+	else if (gr_frontsector->virtualCeiling)
+	{
+		cullCeilingHeight = locCeilingHeight = gr_frontsector->virtualCeilingheight;
+		cullFloorHeight   = locFloorHeight   = gr_frontsector->floorheight;
+	}
+	else
+	{
+		cullFloorHeight   = locFloorHeight   = gr_frontsector->floorheight;
+		cullCeilingHeight = locCeilingHeight = gr_frontsector->ceilingheight;
 
-		if (anyMoved == false)
+#ifdef ESLOPE
+		if (gr_frontsector->f_slope)
 		{
-			for (rover = gl_frontsector->ffloors; rover; rover = rover->next)
-			{
-				sector_t *controlSec = &sectors[rover->secnum];
-				if (controlSec->moved == true)
-				{
-					anyMoved = true;
-					break;
-				}
-			}
+			cullFloorHeight = P_GetZAt(gr_frontsector->f_slope, viewx, viewy);
+			locFloorHeight = P_GetZAt(gr_frontsector->f_slope, gr_frontsector->soundorg.x, gr_frontsector->soundorg.y);
 		}
 
-		if (anyMoved == true)
+		if (gr_frontsector->c_slope)
 		{
-			gl_frontsector->numlights = sub->sector->numlights = 0;
-			R_Prep3DFloors(gl_frontsector);
-			sub->sector->lightlist = gl_frontsector->lightlist;
-			sub->sector->numlights = gl_frontsector->numlights;
-			sub->sector->moved = gl_frontsector->moved = false;
+			cullCeilingHeight = P_GetZAt(gr_frontsector->c_slope, viewx, viewy);
+			locCeilingHeight = P_GetZAt(gr_frontsector->c_slope, gr_frontsector->soundorg.x, gr_frontsector->soundorg.y);
+		}
+#endif
+	}
+// ----- end special tricks -----
+
+	if (gr_frontsector->ffloors)
+	{
+		if (gr_frontsector->moved)
+		{
+			gr_frontsector->numlights = sub->sector->numlights = 0;
+			R_Prep3DFloors(gr_frontsector);
+			sub->sector->lightlist = gr_frontsector->lightlist;
+			sub->sector->numlights = gr_frontsector->numlights;
+			sub->sector->moved = gr_frontsector->moved = false;
 		}
 
-		light = R_GetPlaneLight(gl_frontsector, locFloorHeight, false);
-		if (gl_frontsector->floorlightsec == -1)
-			floorlightlevel = *gl_frontsector->lightlist[light].lightlevel;
-		floorcolormap = *gl_frontsector->lightlist[light].extra_colormap;
+		light = R_GetPlaneLight(gr_frontsector, locFloorHeight, false);
+		if (gr_frontsector->floorlightsec == -1)
+			floorlightlevel = *gr_frontsector->lightlist[light].lightlevel;
+		floorcolormap = gr_frontsector->lightlist[light].extra_colormap;
 
-		light = R_GetPlaneLight(gl_frontsector, locCeilingHeight, false);
-		if (gl_frontsector->ceilinglightsec == -1)
-			ceilinglightlevel = *gl_frontsector->lightlist[light].lightlevel;
-		ceilingcolormap = *gl_frontsector->lightlist[light].extra_colormap;
+		light = R_GetPlaneLight(gr_frontsector, locCeilingHeight, false);
+		if (gr_frontsector->ceilinglightsec == -1)
+			ceilinglightlevel = *gr_frontsector->lightlist[light].lightlevel;
+		ceilingcolormap = gr_frontsector->lightlist[light].extra_colormap;
 	}
 
-	sub->sector->extra_colormap = gl_frontsector->extra_colormap;
+	sub->sector->extra_colormap = gr_frontsector->extra_colormap;
 
 	// render floor ?
 #ifdef DOPLANES
 	// yeah, easy backface cull! :)
 	if (cullFloorHeight < dup_viewz)
 	{
-		if (gl_frontsector->floorpic != skyflatnum)
+		if (gr_frontsector->floorpic != skyflatnum)
 		{
 			if (sub->validcount != validcount)
 			{
-				HWR_GetLevelFlat(&levelflats[gl_frontsector->floorpic]);
-				HWR_RenderPlane(sub, &extrasubsectors[num], false,
+				HWR_GetFlat(levelflats[gr_frontsector->floorpic].lumpnum);
+				HWR_RenderPlane(gr_frontsector, &extrasubsectors[num], false,
 					// Hack to make things continue to work around slopes.
-					locFloorHeight == cullFloorHeight ? locFloorHeight : gl_frontsector->floorheight,
+					locFloorHeight == cullFloorHeight ? locFloorHeight : gr_frontsector->floorheight,
 					// We now return you to your regularly scheduled rendering.
-					PF_Occlude, floorlightlevel, &levelflats[gl_frontsector->floorpic], NULL, 255, floorcolormap);
+					PF_Occlude, floorlightlevel, levelflats[gr_frontsector->floorpic].lumpnum, NULL, 255, false, floorcolormap);
 			}
 		}
 		else
@@ -3134,16 +3534,16 @@ static void HWR_Subsector(size_t num)
 
 	if (cullCeilingHeight > dup_viewz)
 	{
-		if (gl_frontsector->ceilingpic != skyflatnum)
+		if (gr_frontsector->ceilingpic != skyflatnum)
 		{
 			if (sub->validcount != validcount)
 			{
-				HWR_GetLevelFlat(&levelflats[gl_frontsector->ceilingpic]);
-				HWR_RenderPlane(sub, &extrasubsectors[num], true,
+				HWR_GetFlat(levelflats[gr_frontsector->ceilingpic].lumpnum);
+				HWR_RenderPlane(NULL, &extrasubsectors[num], true,
 					// Hack to make things continue to work around slopes.
-					locCeilingHeight == cullCeilingHeight ? locCeilingHeight : gl_frontsector->ceilingheight,
+					locCeilingHeight == cullCeilingHeight ? locCeilingHeight : gr_frontsector->ceilingheight,
 					// We now return you to your regularly scheduled rendering.
-					PF_Occlude, ceilinglightlevel, &levelflats[gl_frontsector->ceilingpic], NULL, 255, ceilingcolormap);
+					PF_Occlude, ceilinglightlevel, levelflats[gr_frontsector->ceilingpic].lumpnum,NULL, 255, false, ceilingcolormap);
 			}
 		}
 		else
@@ -3156,22 +3556,30 @@ static void HWR_Subsector(size_t num)
 
 #ifndef POLYSKY
 	// Moved here because before, when above the ceiling and the floor does not have the sky flat, it doesn't draw the sky
-	if (gl_frontsector->ceilingpic == skyflatnum || gl_frontsector->floorpic == skyflatnum)
+	if (gr_frontsector->ceilingpic == skyflatnum || gr_frontsector->floorpic == skyflatnum)
 		drawsky = true;
 #endif
 
 #ifdef R_FAKEFLOORS
-	if (gl_frontsector->ffloors)
+	if (gr_frontsector->ffloors)
 	{
 		/// \todo fix light, xoffs, yoffs, extracolormap ?
-		for (rover = gl_frontsector->ffloors;
+		ffloor_t * rover;
+		for (rover = gr_frontsector->ffloors;
 			rover; rover = rover->next)
 		{
 			fixed_t cullHeight, centerHeight;
 
             // bottom plane
-			cullHeight   = P_GetFFloorBottomZAt(rover, viewx, viewy);
-			centerHeight = P_GetFFloorBottomZAt(rover, gl_frontsector->soundorg.x, gl_frontsector->soundorg.y);
+#ifdef ESLOPE
+			if (*rover->b_slope)
+			{
+				cullHeight = P_GetZAt(*rover->b_slope, viewx, viewy);
+				centerHeight = P_GetZAt(*rover->b_slope, gr_frontsector->soundorg.x, gr_frontsector->soundorg.y);
+			}
+			else
+#endif
+		    cullHeight = centerHeight = *rover->bottomheight;
 
 			if (!(rover->flags & FF_EXISTS) || !(rover->flags & FF_RENDERPLANES))
 				continue;
@@ -3180,89 +3588,117 @@ static void HWR_Subsector(size_t num)
 
 			if (centerHeight <= locCeilingHeight &&
 			    centerHeight >= locFloorHeight &&
-			    ((dup_viewz < cullHeight && (rover->flags & FF_BOTHPLANES || !(rover->flags & FF_INVERTPLANES))) ||
+			    ((dup_viewz < cullHeight && !(rover->flags & FF_INVERTPLANES)) ||
 			     (dup_viewz > cullHeight && (rover->flags & FF_BOTHPLANES || rover->flags & FF_INVERTPLANES))))
 			{
 				if (rover->flags & FF_FOG)
 				{
 					UINT8 alpha;
 
-					light = R_GetPlaneLight(gl_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
-					alpha = HWR_FogBlockAlpha(*gl_frontsector->lightlist[light].lightlevel, rover->master->frontsector->extra_colormap);
+					light = R_GetPlaneLight(gr_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
+
+					if (rover->master->frontsector->extra_colormap)
+						alpha = HWR_FogBlockAlpha(*gr_frontsector->lightlist[light].lightlevel, rover->master->frontsector->extra_colormap->rgba);
+					else
+						alpha = HWR_FogBlockAlpha(*gr_frontsector->lightlist[light].lightlevel, NORMALFOG);
 
 					HWR_AddTransparentFloor(0,
 					                       &extrasubsectors[num],
 										   false,
 					                       *rover->bottomheight,
-					                       *gl_frontsector->lightlist[light].lightlevel,
+					                       *gr_frontsector->lightlist[light].lightlevel,
 					                       alpha, rover->master->frontsector, PF_Fog|PF_NoTexture,
 										   true, rover->master->frontsector->extra_colormap);
 				}
-				else if ((rover->flags & FF_TRANSLUCENT && rover->alpha < 256) || rover->blend) // SoM: Flags are more efficient
+				else if (rover->flags & FF_TRANSLUCENT && rover->alpha < 256) // SoM: Flags are more efficient
 				{
-					light = R_GetPlaneLight(gl_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
-
-					HWR_AddTransparentFloor(&levelflats[*rover->bottompic],
+					light = R_GetPlaneLight(gr_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
+#ifndef SORTING
+					HWR_Add3DWater(levelflats[*rover->bottompic].lumpnum,
+					               &extrasubsectors[num],
+					               *rover->bottomheight,
+					               *gr_frontsector->lightlist[light].lightlevel,
+					               rover->alpha-1, rover->master->frontsector);
+#else
+					HWR_AddTransparentFloor(levelflats[*rover->bottompic].lumpnum,
 					                       &extrasubsectors[num],
 										   false,
 					                       *rover->bottomheight,
-					                       *gl_frontsector->lightlist[light].lightlevel,
-					                       rover->alpha-1 > 255 ? 255 : rover->alpha-1, rover->master->frontsector,
-					                       HWR_RippleBlend(gl_frontsector, rover, false) | (rover->blend ? HWR_GetBlendModeFlag(rover->blend) : PF_Translucent),
-					                       false, *gl_frontsector->lightlist[light].extra_colormap);
+					                       *gr_frontsector->lightlist[light].lightlevel,
+					                       rover->alpha-1 > 255 ? 255 : rover->alpha-1, rover->master->frontsector, PF_Translucent,
+					                       false, gr_frontsector->lightlist[light].extra_colormap);
+#endif
 				}
 				else
 				{
-					HWR_GetLevelFlat(&levelflats[*rover->bottompic]);
-					light = R_GetPlaneLight(gl_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
-					HWR_RenderPlane(sub, &extrasubsectors[num], false, *rover->bottomheight, HWR_RippleBlend(gl_frontsector, rover, false)|PF_Occlude, *gl_frontsector->lightlist[light].lightlevel, &levelflats[*rover->bottompic],
-					                rover->master->frontsector, 255, *gl_frontsector->lightlist[light].extra_colormap);
+					HWR_GetFlat(levelflats[*rover->bottompic].lumpnum);
+					light = R_GetPlaneLight(gr_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
+					HWR_RenderPlane(NULL, &extrasubsectors[num], false, *rover->bottomheight, PF_Occlude, *gr_frontsector->lightlist[light].lightlevel, levelflats[*rover->bottompic].lumpnum,
+					                rover->master->frontsector, 255, false, gr_frontsector->lightlist[light].extra_colormap);
 				}
 			}
 
 			// top plane
-			cullHeight   = P_GetFFloorTopZAt(rover, viewx, viewy);
-			centerHeight = P_GetFFloorTopZAt(rover, gl_frontsector->soundorg.x, gl_frontsector->soundorg.y);
+#ifdef ESLOPE
+			if (*rover->t_slope)
+			{
+				cullHeight = P_GetZAt(*rover->t_slope, viewx, viewy);
+				centerHeight = P_GetZAt(*rover->t_slope, gr_frontsector->soundorg.x, gr_frontsector->soundorg.y);
+			}
+			else
+#endif
+		    cullHeight = centerHeight = *rover->topheight;
 
 			if (centerHeight >= locFloorHeight &&
 			    centerHeight <= locCeilingHeight &&
-			    ((dup_viewz > cullHeight && (rover->flags & FF_BOTHPLANES || !(rover->flags & FF_INVERTPLANES))) ||
+			    ((dup_viewz > cullHeight && !(rover->flags & FF_INVERTPLANES)) ||
 			     (dup_viewz < cullHeight && (rover->flags & FF_BOTHPLANES || rover->flags & FF_INVERTPLANES))))
 			{
 				if (rover->flags & FF_FOG)
 				{
 					UINT8 alpha;
 
-					light = R_GetPlaneLight(gl_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
-					alpha = HWR_FogBlockAlpha(*gl_frontsector->lightlist[light].lightlevel, rover->master->frontsector->extra_colormap);
+					light = R_GetPlaneLight(gr_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
+
+					if (rover->master->frontsector->extra_colormap)
+						alpha = HWR_FogBlockAlpha(*gr_frontsector->lightlist[light].lightlevel, rover->master->frontsector->extra_colormap->rgba);
+					else
+						alpha = HWR_FogBlockAlpha(*gr_frontsector->lightlist[light].lightlevel, NORMALFOG);
 
 					HWR_AddTransparentFloor(0,
 					                       &extrasubsectors[num],
 										   true,
 					                       *rover->topheight,
-					                       *gl_frontsector->lightlist[light].lightlevel,
+					                       *gr_frontsector->lightlist[light].lightlevel,
 					                       alpha, rover->master->frontsector, PF_Fog|PF_NoTexture,
 										   true, rover->master->frontsector->extra_colormap);
 				}
-				else if ((rover->flags & FF_TRANSLUCENT && rover->alpha < 256) || rover->blend)
+				else if (rover->flags & FF_TRANSLUCENT && rover->alpha < 256)
 				{
-					light = R_GetPlaneLight(gl_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
-
-					HWR_AddTransparentFloor(&levelflats[*rover->toppic],
+					light = R_GetPlaneLight(gr_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
+#ifndef SORTING
+					HWR_Add3DWater(levelflats[*rover->toppic].lumpnum,
+					                          &extrasubsectors[num],
+					                          *rover->topheight,
+					                          *gr_frontsector->lightlist[light].lightlevel,
+					                          rover->alpha-1, rover->master->frontsector);
+#else
+					HWR_AddTransparentFloor(levelflats[*rover->toppic].lumpnum,
 					                        &extrasubsectors[num],
 											true,
 					                        *rover->topheight,
-					                        *gl_frontsector->lightlist[light].lightlevel,
-					                        rover->alpha-1 > 255 ? 255 : rover->alpha-1, rover->master->frontsector,
- 					                        HWR_RippleBlend(gl_frontsector, rover, false) | (rover->blend ? HWR_GetBlendModeFlag(rover->blend) : PF_Translucent),
-					                        false, *gl_frontsector->lightlist[light].extra_colormap);
+					                        *gr_frontsector->lightlist[light].lightlevel,
+					                        rover->alpha-1 > 255 ? 255 : rover->alpha-1, rover->master->frontsector, PF_Translucent,
+					                        false, gr_frontsector->lightlist[light].extra_colormap);
+#endif
+
 				}
 				else
 				{
-					HWR_GetLevelFlat(&levelflats[*rover->toppic]);
-					light = R_GetPlaneLight(gl_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
-					HWR_RenderPlane(sub, &extrasubsectors[num], true, *rover->topheight, HWR_RippleBlend(gl_frontsector, rover, false)|PF_Occlude, *gl_frontsector->lightlist[light].lightlevel, &levelflats[*rover->toppic],
-					                  rover->master->frontsector, 255, *gl_frontsector->lightlist[light].extra_colormap);
+					HWR_GetFlat(levelflats[*rover->toppic].lumpnum);
+					light = R_GetPlaneLight(gr_frontsector, centerHeight, dup_viewz < cullHeight ? true : false);
+					HWR_RenderPlane(NULL, &extrasubsectors[num], true, *rover->topheight, PF_Occlude, *gr_frontsector->lightlist[light].lightlevel, levelflats[*rover->toppic].lumpnum,
+					                  rover->master->frontsector, 255, false, gr_frontsector->lightlist[light].extra_colormap);
 				}
 			}
 		}
@@ -3270,6 +3706,7 @@ static void HWR_Subsector(size_t num)
 #endif
 #endif //doplanes
 
+#ifdef POLYOBJECTS
 	// Draw all the polyobjects in this subsector
 	if (sub->polyList)
 	{
@@ -3284,21 +3721,21 @@ static void HWR_Subsector(size_t num)
 			po = (polyobj_t *)(po->link.next);
 		}
 
-		// for render stats
-		ps_numpolyobjects.value.i += numpolys;
-
 		// Sort polyobjects
 		R_SortPolyObjects(sub);
 
 		// Draw polyobject lines.
 		HWR_AddPolyObjectSegs();
 
+#ifdef POLYOBJECTS_PLANES
 		if (sub->validcount != validcount) // This validcount situation seems to let us know that the floors have already been drawn.
 		{
 			// Draw polyobject planes
 			HWR_AddPolyObjectPlanes();
 		}
+#endif
 	}
+#endif
 
 // Hurder ici se passe les choses INT32�essantes!
 // on vient de tracer le sol et le plafond
@@ -3308,11 +3745,11 @@ static void HWR_Subsector(size_t num)
 	{
 		// draw sprites first, coz they are clipped to the solidsegs of
 		// subsectors more 'in front'
-		HWR_AddSprites(gl_frontsector);
+		HWR_AddSprites(gr_frontsector);
 
 		//Hurdler: at this point validcount must be the same, but is not because
-		//         gl_frontsector doesn't point anymore to sub->sector due to
-		//         the call gl_frontsector = R_FakeFlat(...)
+		//         gr_frontsector doesn't point anymore to sub->sector due to
+		//         the call gr_frontsector = R_FakeFlat(...)
 		//         if it's not done, the sprite is drawn more than once,
 		//         what looks really bad with translucency or dynamic light,
 		//         without talking about the overdraw of course.
@@ -3320,10 +3757,11 @@ static void HWR_Subsector(size_t num)
 
 		while (count--)
 		{
-
-			if (!line->glseg && !line->polyseg) // ignore segs that belong to polyobjects
+#ifdef POLYOBJECTS
+				if (!line->polyseg) // ignore segs that belong to polyobjects
+#endif
 				HWR_AddLine(line);
-			line++;
+				line++;
 		}
 	}
 
@@ -3393,19 +3831,17 @@ static void HWR_RenderBSPNode(INT32 bspnum)
 	// Decide which side the view point is on
 	INT32 side;
 
-	ps_numbspcalls.value.i++;
-
 	// Found a subsector?
 	if (bspnum & NF_SUBSECTOR)
 	{
 		if (bspnum == -1)
 		{
-			//*(gl_drawsubsector_p++) = 0;
+			//*(gr_drawsubsector_p++) = 0;
 			HWR_Subsector(0);
 		}
 		else
 		{
-			//*(gl_drawsubsector_p++) = bspnum&(~NF_SUBSECTOR);
+			//*(gr_drawsubsector_p++) = bspnum&(~NF_SUBSECTOR);
 			HWR_Subsector(bspnum&(~NF_SUBSECTOR));
 		}
 		return;
@@ -3435,7 +3871,7 @@ static void HWR_RenderBSPNode(INT32 bspnum)
 //
 static void HWR_ClearDrawSubsectors(void)
 {
-	gl_drawsubsector_p = gl_drawsubsectors;
+	gr_drawsubsector_p = gr_drawsubsectors;
 }
 
 //
@@ -3443,7 +3879,7 @@ static void HWR_ClearDrawSubsectors(void)
 //
 static void HWR_RenderSubsectors(void)
 {
-	while (gl_drawsubsector_p > gl_drawsubsectors)
+	while (gr_drawsubsector_p > gr_drawsubsectors)
 	{
 		HWR_RenderBSPNode(
 		lastsubsec->nextsubsec = bspnum & (~NF_SUBSECTOR);
@@ -3497,7 +3933,7 @@ void HWR_InitTextureMapping(void)
 			else if (t > grviewwidth+1)
 				t = grviewwidth+1;
 		}
-		gl_viewangletox[i] = t;
+		gr_viewangletox[i] = t;
 	}
 
 	// Scan viewangletox[] to generate xtoviewangle[]:
@@ -3506,32 +3942,32 @@ void HWR_InitTextureMapping(void)
 	for (x = 0; x <= grviewwidth; x++)
 	{
 		i = 0;
-		while (gl_viewangletox[i]>x)
+		while (gr_viewangletox[i]>x)
 			i++;
-		gl_xtoviewangle[x] = (i<<ANGLETOFINESHIFT) - ANGLE_90;
+		gr_xtoviewangle[x] = (i<<ANGLETOFINESHIFT) - ANGLE_90;
 	}
 
 	// Take out the fencepost cases from viewangletox.
 	for (i = 0; i < FINEANGLES/2; i++)
 	{
-		if (gl_viewangletox[i] == -1)
-			gl_viewangletox[i] = 0;
-		else if (gl_viewangletox[i] == grviewwidth+1)
-			gl_viewangletox[i]  = grviewwidth;
+		if (gr_viewangletox[i] == -1)
+			gr_viewangletox[i] = 0;
+		else if (gr_viewangletox[i] == grviewwidth+1)
+			gr_viewangletox[i]  = grviewwidth;
 	}
 
-	gl_clipangle = gl_xtoviewangle[0];
+	gr_clipangle = gr_xtoviewangle[0];
 }
 
 // ==========================================================================
-// gl_things.c
+// gr_things.c
 // ==========================================================================
 
 // sprites are drawn after all wall and planes are rendered, so that
 // sprite translucency effects apply on the rendered view (instead of the background sky!!)
 
-static UINT32 gl_visspritecount;
-static gl_vissprite_t *gl_visspritechunks[MAXVISSPRITES >> VISSPRITECHUNKBITS] = {NULL};
+static UINT32 gr_visspritecount;
+static gr_vissprite_t *gr_visspritechunks[MAXVISSPRITES >> VISSPRITECHUNKBITS] = {NULL};
 
 // --------------------------------------------------------------------------
 // HWR_ClearSprites
@@ -3539,79 +3975,62 @@ static gl_vissprite_t *gl_visspritechunks[MAXVISSPRITES >> VISSPRITECHUNKBITS] =
 // --------------------------------------------------------------------------
 static void HWR_ClearSprites(void)
 {
-	gl_visspritecount = 0;
+	gr_visspritecount = 0;
 }
 
 // --------------------------------------------------------------------------
 // HWR_NewVisSprite
 // --------------------------------------------------------------------------
-static gl_vissprite_t gl_overflowsprite;
+static gr_vissprite_t gr_overflowsprite;
 
-static gl_vissprite_t *HWR_GetVisSprite(UINT32 num)
+static gr_vissprite_t *HWR_GetVisSprite(UINT32 num)
 {
 		UINT32 chunk = num >> VISSPRITECHUNKBITS;
 
 		// Allocate chunk if necessary
-		if (!gl_visspritechunks[chunk])
-			Z_Malloc(sizeof(gl_vissprite_t) * VISSPRITESPERCHUNK, PU_LEVEL, &gl_visspritechunks[chunk]);
+		if (!gr_visspritechunks[chunk])
+			Z_Malloc(sizeof(gr_vissprite_t) * VISSPRITESPERCHUNK, PU_LEVEL, &gr_visspritechunks[chunk]);
 
-		return gl_visspritechunks[chunk] + (num & VISSPRITEINDEXMASK);
+		return gr_visspritechunks[chunk] + (num & VISSPRITEINDEXMASK);
 }
 
-static gl_vissprite_t *HWR_NewVisSprite(void)
+static gr_vissprite_t *HWR_NewVisSprite(void)
 {
-	if (gl_visspritecount == MAXVISSPRITES)
-		return &gl_overflowsprite;
+	if (gr_visspritecount == MAXVISSPRITES)
+		return &gr_overflowsprite;
 
-	return HWR_GetVisSprite(gl_visspritecount++);
+	return HWR_GetVisSprite(gr_visspritecount++);
 }
 
-// A hack solution for transparent surfaces appearing on top of linkdraw sprites.
-// Keep a list of linkdraw sprites and draw their shapes to the z-buffer after all other
-// sprite drawing is done. (effectively the z-buffer drawing of linkdraw sprites is delayed)
-// NOTE: This will no longer be necessary once full translucent sorting is implemented, where
-// translucent sprites and surfaces are sorted together.
-
-typedef struct
+// Finds a floor through which light does not pass.
+static fixed_t HWR_OpaqueFloorAtPos(fixed_t x, fixed_t y, fixed_t z, fixed_t height)
 {
-	FOutVector verts[4];
-	gl_vissprite_t *spr;
-} zbuffersprite_t;
+	const sector_t *sec = R_PointInSubsector(x, y)->sector;
+	fixed_t floorz = sec->floorheight;
 
-// this list is used to store data about linkdraw sprites
-zbuffersprite_t linkdrawlist[MAXVISSPRITES];
-UINT32 linkdrawcount = 0;
-
-// add the necessary data to the list for delayed z-buffer drawing
-static void HWR_LinkDrawHackAdd(FOutVector *verts, gl_vissprite_t *spr)
-{
-	if (linkdrawcount < MAXVISSPRITES)
+	if (sec->ffloors)
 	{
-		memcpy(linkdrawlist[linkdrawcount].verts, verts, sizeof(FOutVector) * 4);
-		linkdrawlist[linkdrawcount].spr = spr;
-		linkdrawcount++;
-	}
-}
+		ffloor_t *rover;
+		fixed_t delta1, delta2;
+		const fixed_t thingtop = z + height;
 
-// process and clear the list of sprites for delayed z-buffer drawing
-static void HWR_LinkDrawHackFinish(void)
-{
-	UINT32 i;
-	FSurfaceInfo surf;
-	surf.PolyColor.rgba = 0xFFFFFFFF;
-	surf.TintColor.rgba = 0xFFFFFFFF;
-	surf.FadeColor.rgba = 0xFFFFFFFF;
-	surf.LightInfo.light_level = 0;
-	surf.LightInfo.fade_start = 0;
-	surf.LightInfo.fade_end = 31;
-	for (i = 0; i < linkdrawcount; i++)
-	{
-		// draw sprite shape, only to z-buffer
-		HWR_GetPatch(linkdrawlist[i].spr->gpatch);
-		HWR_ProcessPolygon(&surf, linkdrawlist[i].verts, 4, PF_Translucent|PF_Occlude|PF_Invisible, 0, false);
+		for (rover = sec->ffloors; rover; rover = rover->next)
+		{
+			if (!(rover->flags & FF_EXISTS)
+			|| !(rover->flags & FF_RENDERPLANES)
+			|| rover->flags & FF_TRANSLUCENT
+			|| rover->flags & FF_FOG
+			|| rover->flags & FF_INVERTPLANES)
+				continue;
+
+			delta1 = z - (*rover->bottomheight + ((*rover->topheight - *rover->bottomheight)/2));
+			delta2 = thingtop - (*rover->bottomheight + ((*rover->topheight - *rover->bottomheight)/2));
+			if (*rover->topheight > floorz && abs(delta1) < abs(delta2))
+				floorz = *rover->topheight;
+		}
 	}
-	// reset list
-	linkdrawcount = 0;
+
+	return floorz;
 }
 
 //
@@ -3654,236 +4073,277 @@ static boolean HWR_DoCulling(line_t *cullheight, line_t *viewcullheight, float v
 	return false;
 }
 
-static void HWR_DrawDropShadow(mobj_t *thing, fixed_t scale)
+static void HWR_DrawSpriteShadow(gr_vissprite_t *spr, GLPatch_t *gpatch, float this_scale)
 {
-	patch_t *gpatch;
-	FOutVector shadowVerts[4];
+	FOutVector swallVerts[4];
 	FSurfaceInfo sSurf;
-	float fscale; float fx; float fy; float offset;
-	extracolormap_t *colormap = NULL;
-	FBITFIELD blendmode = PF_Translucent|PF_Modulated;
-	INT32 shader = -1;
-	UINT8 i;
-	SINT8 flip = P_MobjFlip(thing);
+	fixed_t floorheight, mobjfloor;
+	float offset = 0;
 
-	INT32 light;
-	fixed_t scalemul;
-	UINT16 alpha;
-	fixed_t floordiff;
-	fixed_t groundz;
-	fixed_t slopez;
-	pslope_t *groundslope;
-
-	// uncapped/interpolation
-	interpmobjstate_t interp = {0};
-
-	if (R_UsingFrameInterpolation() && !paused)
+	mobjfloor = HWR_OpaqueFloorAtPos(
+		spr->mobj->x, spr->mobj->y,
+		spr->mobj->z, spr->mobj->height);
+	if (cv_shadowoffs.value)
 	{
-		R_InterpolateMobjState(thing, rendertimefrac, &interp);
+		angle_t shadowdir;
+
+		// Set direction
+		if (splitscreen && stplyr == &players[secondarydisplayplayer])
+			shadowdir = localangle2 + FixedAngle(cv_cam2_rotate.value);
+		else
+			shadowdir = localangle + FixedAngle(cv_cam_rotate.value);
+
+		// Find floorheight
+		floorheight = HWR_OpaqueFloorAtPos(
+			spr->mobj->x + P_ReturnThrustX(spr->mobj, shadowdir, spr->mobj->z - mobjfloor),
+			spr->mobj->y + P_ReturnThrustY(spr->mobj, shadowdir, spr->mobj->z - mobjfloor),
+			spr->mobj->z, spr->mobj->height);
+
+		// The shadow is falling ABOVE it's mobj?
+		// Don't draw it, then!
+		if (spr->mobj->z < floorheight)
+			return;
+		else
+		{
+			fixed_t floorz;
+			floorz = HWR_OpaqueFloorAtPos(
+				spr->mobj->x + P_ReturnThrustX(spr->mobj, shadowdir, spr->mobj->z - floorheight),
+				spr->mobj->y + P_ReturnThrustY(spr->mobj, shadowdir, spr->mobj->z - floorheight),
+				spr->mobj->z, spr->mobj->height);
+			// The shadow would be falling on a wall? Don't draw it, then.
+			// Would draw midair otherwise.
+			if (floorz < floorheight)
+				return;
+		}
+
+		floorheight = FixedInt(spr->mobj->z - floorheight);
+
+		offset = floorheight;
 	}
 	else
-	{
-		R_InterpolateMobjState(thing, FRACUNIT, &interp);
-	}
+		floorheight = FixedInt(spr->mobj->z - mobjfloor);
 
-	groundz = R_GetShadowZ(thing, &groundslope);
-
-	//if (abs(groundz - gl_viewz) / tz > 4) return; // Prevent stretchy shadows and possible crashes
-
-	floordiff = abs((flip < 0 ? thing->height : 0) + interp.z - groundz);
-
-	alpha = floordiff / (4*FRACUNIT) + 75;
-	if (alpha >= 255) return;
-	alpha = 255 - alpha;
-
-	gpatch = (patch_t *)W_CachePatchName("DSHADOW", PU_SPRITE);
-	if (!(gpatch && ((GLPatch_t *)gpatch->hardware)->mipmap->format)) return;
-	HWR_GetPatch(gpatch);
-
-	scalemul = FixedMul(FRACUNIT - floordiff/640, scale);
-	scalemul = FixedMul(scalemul, (thing->radius*2) / gpatch->height);
-
-	fscale = FIXED_TO_FLOAT(scalemul);
-	fx = FIXED_TO_FLOAT(interp.x);
-	fy = FIXED_TO_FLOAT(interp.y);
-
+	// create the sprite billboard
+	//
 	//  3--2
 	//  | /|
 	//  |/ |
 	//  0--1
 
-	if (thing && fabsf(fscale - 1.0f) > 1.0E-36f)
-		offset = ((gpatch->height)/2) * fscale;
-	else
-		offset = (float)((gpatch->height)/2);
+	// x1/x2 were already scaled in HWR_ProjectSprite
+	// First match the normal sprite
+	swallVerts[0].x = swallVerts[3].x = spr->x1;
+	swallVerts[2].x = swallVerts[1].x = spr->x2;
+	swallVerts[0].z = swallVerts[3].z = spr->z1;
+	swallVerts[2].z = swallVerts[1].z = spr->z2;
 
-	shadowVerts[2].x = shadowVerts[3].x = fx + offset;
-	shadowVerts[1].x = shadowVerts[0].x = fx - offset;
-	shadowVerts[1].z = shadowVerts[2].z = fy - offset;
-	shadowVerts[0].z = shadowVerts[3].z = fy + offset;
-
-	for (i = 0; i < 4; i++)
+	if (spr->mobj && fabsf(this_scale - 1.0f) > 1.0E-36f)
 	{
-		float oldx = shadowVerts[i].x;
-		float oldy = shadowVerts[i].z;
-		shadowVerts[i].x = fx + ((oldx - fx) * gl_viewcos) - ((oldy - fy) * gl_viewsin);
-		shadowVerts[i].z = fy + ((oldx - fx) * gl_viewsin) + ((oldy - fy) * gl_viewcos);
-	}
+		// Always a pixel above the floor, perfectly flat.
+		swallVerts[0].y = swallVerts[1].y = swallVerts[2].y = swallVerts[3].y = spr->ty - gpatch->topoffset * this_scale - (floorheight+3);
 
-	if (groundslope)
-	{
-		for (i = 0; i < 4; i++)
-		{
-			slopez = P_GetSlopeZAt(groundslope, FLOAT_TO_FIXED(shadowVerts[i].x), FLOAT_TO_FIXED(shadowVerts[i].z));
-			shadowVerts[i].y = FIXED_TO_FLOAT(slopez) + flip * 0.05f;
-		}
+		// Now transform the TOP vertices along the floor in the direction of the camera
+		swallVerts[3].x = spr->x1 + ((gpatch->height * this_scale) + offset) * gr_viewcos;
+		swallVerts[2].x = spr->x2 + ((gpatch->height * this_scale) + offset) * gr_viewcos;
+		swallVerts[3].z = spr->z1 + ((gpatch->height * this_scale) + offset) * gr_viewsin;
+		swallVerts[2].z = spr->z2 + ((gpatch->height * this_scale) + offset) * gr_viewsin;
 	}
 	else
 	{
-		for (i = 0; i < 4; i++)
-			shadowVerts[i].y = FIXED_TO_FLOAT(groundz) + flip * 0.05f;
+		// Always a pixel above the floor, perfectly flat.
+		swallVerts[0].y = swallVerts[1].y = swallVerts[2].y = swallVerts[3].y = spr->ty - gpatch->topoffset - (floorheight+3);
+
+		// Now transform the TOP vertices along the floor in the direction of the camera
+		swallVerts[3].x = spr->x1 + (gpatch->height + offset) * gr_viewcos;
+		swallVerts[2].x = spr->x2 + (gpatch->height + offset) * gr_viewcos;
+		swallVerts[3].z = spr->z1 + (gpatch->height + offset) * gr_viewsin;
+		swallVerts[2].z = spr->z2 + (gpatch->height + offset) * gr_viewsin;
 	}
 
-	shadowVerts[0].s = shadowVerts[3].s = 0;
-	shadowVerts[2].s = shadowVerts[1].s = ((GLPatch_t *)gpatch->hardware)->max_s;
-
-	shadowVerts[3].t = shadowVerts[2].t = 0;
-	shadowVerts[0].t = shadowVerts[1].t = ((GLPatch_t *)gpatch->hardware)->max_t;
-
-	if (!(thing->renderflags & RF_NOCOLORMAPS))
+	// We also need to move the bottom ones away when shadowoffs is on
+	if (cv_shadowoffs.value)
 	{
-		if (thing->subsector->sector->numlights)
+		swallVerts[0].x = spr->x1 + offset * gr_viewcos;
+		swallVerts[1].x = spr->x2 + offset * gr_viewcos;
+		swallVerts[0].z = spr->z1 + offset * gr_viewsin;
+		swallVerts[1].z = spr->z2 + offset * gr_viewsin;
+	}
+
+	if (spr->flip)
+	{
+		swallVerts[0].sow = swallVerts[3].sow = gpatch->max_s;
+		swallVerts[2].sow = swallVerts[1].sow = 0;
+	}
+	else
+	{
+		swallVerts[0].sow = swallVerts[3].sow = 0;
+		swallVerts[2].sow = swallVerts[1].sow = gpatch->max_s;
+	}
+
+	// flip the texture coords (look familiar?)
+	if (spr->vflip)
+	{
+		swallVerts[3].tow = swallVerts[2].tow = gpatch->max_t;
+		swallVerts[0].tow = swallVerts[1].tow = 0;
+	}
+	else
+	{
+		swallVerts[3].tow = swallVerts[2].tow = 0;
+		swallVerts[0].tow = swallVerts[1].tow = gpatch->max_t;
+	}
+
+	sSurf.FlatColor.s.red = 0x00;
+	sSurf.FlatColor.s.blue = 0x00;
+	sSurf.FlatColor.s.green = 0x00;
+
+	/*if (spr->mobj->frame & FF_TRANSMASK || spr->mobj->flags2 & MF2_SHADOW)
+	{
+		sector_t *sector = spr->mobj->subsector->sector;
+		UINT8 lightlevel = 255;
+		extracolormap_t *colormap = sector->extra_colormap;
+
+		if (sector->numlights)
 		{
-			// Always use the light at the top instead of whatever I was doing before
-			light = R_GetPlaneLight(thing->subsector->sector, groundz, false);
+			INT32 light = R_GetPlaneLight(sector, spr->mobj->floorz, false);
 
-			if (*thing->subsector->sector->lightlist[light].extra_colormap)
-				colormap = *thing->subsector->sector->lightlist[light].extra_colormap;
+			if (!(spr->mobj->frame & FF_FULLBRIGHT))
+				lightlevel = *sector->lightlist[light].lightlevel;
+
+			if (sector->lightlist[light].extra_colormap)
+				colormap = sector->lightlist[light].extra_colormap;
 		}
-		else if (thing->subsector->sector->extra_colormap)
-			colormap = thing->subsector->sector->extra_colormap;
-	}
+		else
+		{
+			lightlevel = sector->lightlevel;
 
-	HWR_Lighting(&sSurf, 0, colormap);
-	sSurf.PolyColor.s.alpha = alpha;
+			if (sector->extra_colormap)
+				colormap = sector->extra_colormap;
+		}
 
-	if (HWR_UseShader())
+		if (colormap)
+			sSurf.FlatColor.rgba = HWR_Lighting(lightlevel/2, colormap->rgba, colormap->fadergba, false, true);
+		else
+			sSurf.FlatColor.rgba = HWR_Lighting(lightlevel/2, NORMALFOG, FADEFOG, false, true);
+	}*/
+
+	// shadow is always half as translucent as the sprite itself
+	if (!cv_translucency.value) // use default translucency (main sprite won't have any translucency)
+		sSurf.FlatColor.s.alpha = 0x80; // default
+	else if (spr->mobj->flags2 & MF2_SHADOW)
+		sSurf.FlatColor.s.alpha = 0x20;
+	else if (spr->mobj->frame & FF_TRANSMASK)
 	{
-		shader = SHADER_SPRITE;
-		blendmode |= PF_ColorMapped;
+		HWR_TranstableToAlpha((spr->mobj->frame & FF_TRANSMASK)>>FF_TRANSSHIFT, &sSurf);
+		sSurf.FlatColor.s.alpha /= 2; //cut alpha in half!
 	}
+	else
+		sSurf.FlatColor.s.alpha = 0x80; // default
 
-	HWR_ProcessPolygon(&sSurf, shadowVerts, 4, blendmode, shader, false);
+	if (sSurf.FlatColor.s.alpha > floorheight/4)
+	{
+		sSurf.FlatColor.s.alpha = (UINT8)(sSurf.FlatColor.s.alpha - floorheight/4);
+		HWD.pfnDrawPolygon(&sSurf, swallVerts, 4, PF_Translucent|PF_Modulated|PF_Clip);
+	}
 }
 
 // This is expecting a pointer to an array containing 4 wallVerts for a sprite
-static void HWR_RotateSpritePolyToAim(gl_vissprite_t *spr, FOutVector *wallVerts, const boolean precip)
+static void HWR_RotateSpritePolyToAim(gr_vissprite_t *spr, FOutVector *wallVerts)
 {
-	if (cv_glspritebillboarding.value
-		&& spr && spr->mobj && !R_ThingIsPaperSprite(spr->mobj)
-		&& wallVerts)
+	if (cv_grspritebillboarding.value && spr && spr->mobj && wallVerts)
 	{
-		// uncapped/interpolation
-		interpmobjstate_t interp = {0};
-		float basey, lowy;
-
-		// do interpolation
-		if (R_UsingFrameInterpolation() && !paused)
-		{
-			if (precip)
-			{
-				R_InterpolatePrecipMobjState((precipmobj_t *)spr->mobj, rendertimefrac, &interp);
-			}
-			else
-			{
-				R_InterpolateMobjState(spr->mobj, rendertimefrac, &interp);
-			}
-		}
-		else
-		{
-			if (precip)
-			{
-				R_InterpolatePrecipMobjState((precipmobj_t *)spr->mobj, FRACUNIT, &interp);
-			}
-			else
-			{
-				R_InterpolateMobjState(spr->mobj, FRACUNIT, &interp);
-			}
-		}
-
+		float basey = FIXED_TO_FLOAT(spr->mobj->z);
+		float lowy = wallVerts[0].y;
 		if (P_MobjFlip(spr->mobj) == -1)
 		{
-			basey = FIXED_TO_FLOAT(interp.z + spr->mobj->height);
+			basey = FIXED_TO_FLOAT(spr->mobj->z + spr->mobj->height);
 		}
-		else
-		{
-			basey = FIXED_TO_FLOAT(interp.z);
-		}
-		lowy = wallVerts[0].y;
-
 		// Rotate sprites to fully billboard with the camera
 		// X, Y, AND Z need to be manipulated for the polys to rotate around the
 		// origin, because of how the origin setting works I believe that should
 		// be mobj->z or mobj->z + mobj->height
-		wallVerts[2].y = wallVerts[3].y = (spr->gzt - basey) * gl_viewludsin + basey;
-		wallVerts[0].y = wallVerts[1].y = (lowy - basey) * gl_viewludsin + basey;
+		wallVerts[2].y = wallVerts[3].y = (spr->ty - basey) * gr_viewludsin + basey;
+		wallVerts[0].y = wallVerts[1].y = (lowy - basey) * gr_viewludsin + basey;
 		// translate back to be around 0 before translating back
-		wallVerts[3].x += ((spr->gzt - basey) * gl_viewludcos) * gl_viewcos;
-		wallVerts[2].x += ((spr->gzt - basey) * gl_viewludcos) * gl_viewcos;
+		wallVerts[3].x += ((spr->ty - basey) * gr_viewludcos) * gr_viewcos;
+		wallVerts[2].x += ((spr->ty - basey) * gr_viewludcos) * gr_viewcos;
 
-		wallVerts[0].x += ((lowy - basey) * gl_viewludcos) * gl_viewcos;
-		wallVerts[1].x += ((lowy - basey) * gl_viewludcos) * gl_viewcos;
+		wallVerts[0].x += ((lowy - basey) * gr_viewludcos) * gr_viewcos;
+		wallVerts[1].x += ((lowy - basey) * gr_viewludcos) * gr_viewcos;
 
-		wallVerts[3].z += ((spr->gzt - basey) * gl_viewludcos) * gl_viewsin;
-		wallVerts[2].z += ((spr->gzt - basey) * gl_viewludcos) * gl_viewsin;
+		wallVerts[3].z += ((spr->ty - basey) * gr_viewludcos) * gr_viewsin;
+		wallVerts[2].z += ((spr->ty - basey) * gr_viewludcos) * gr_viewsin;
 
-		wallVerts[0].z += ((lowy - basey) * gl_viewludcos) * gl_viewsin;
-		wallVerts[1].z += ((lowy - basey) * gl_viewludcos) * gl_viewsin;
+		wallVerts[0].z += ((lowy - basey) * gr_viewludcos) * gr_viewsin;
+		wallVerts[1].z += ((lowy - basey) * gr_viewludcos) * gr_viewsin;
 	}
 }
 
-static void HWR_SplitSprite(gl_vissprite_t *spr)
+static void HWR_SplitSprite(gr_vissprite_t *spr)
 {
+	float this_scale = 1.0f;
 	FOutVector wallVerts[4];
 	FOutVector baseWallVerts[4]; // This is what the verts should end up as
-	patch_t *gpatch;
+	GLPatch_t *gpatch;
 	FSurfaceInfo Surf;
-	extracolormap_t *colormap = NULL;
+	const boolean hires = (spr->mobj && spr->mobj->skin && ((skin_t *)spr->mobj->skin)->flags & SF_HIRES);
+	extracolormap_t *colormap;
 	FUINT lightlevel;
-	boolean lightset = true;
 	FBITFIELD blend = 0;
-	FBITFIELD occlusion;
-	INT32 shader = -1;
-	boolean use_linkdraw_hack = false;
 	UINT8 alpha;
 
 	INT32 i;
 	float realtop, realbot, top, bot;
-	float ttop, tbot, tmult;
+	float towtop, towbot, towmult;
 	float bheight;
 	float realheight, heightmult;
 	const sector_t *sector = spr->mobj->subsector->sector;
 	const lightlist_t *list = sector->lightlist;
+#ifdef ESLOPE
 	float endrealtop, endrealbot, endtop, endbot;
 	float endbheight;
 	float endrealheight;
 	fixed_t temp;
 	fixed_t v1x, v1y, v2x, v2y;
+#endif
 
-	gpatch = spr->gpatch;
+	this_scale = FIXED_TO_FLOAT(spr->mobj->scale);
+
+	if (hires)
+		this_scale = this_scale * FIXED_TO_FLOAT(((skin_t *)spr->mobj->skin)->highresscale);
+
+	gpatch = W_CachePatchNum(spr->patchlumpnum, PU_CACHE);
 
 	// cache the patch in the graphics card memory
 	//12/12/99: Hurdler: same comment as above (for md2)
 	//Hurdler: 25/04/2000: now support colormap in hardware mode
 	HWR_GetMappedPatch(gpatch, spr->colormap);
 
+	// Draw shadow BEFORE sprite
+	if (cv_shadow.value // Shadows enabled
+		&& (spr->mobj->flags & (MF_SCENERY|MF_SPAWNCEILING|MF_NOGRAVITY)) != (MF_SCENERY|MF_SPAWNCEILING|MF_NOGRAVITY) // Ceiling scenery have no shadow.
+		&& !(spr->mobj->flags2 & MF2_DEBRIS) // Debris have no corona or shadow.
+#ifdef ALAM_LIGHTING
+		&& !(t_lspr[spr->mobj->sprite]->type // Things with dynamic lights have no shadow.
+		&& (!spr->mobj->player || spr->mobj->player->powers[pw_super])) // Except for non-super players.
+#endif
+		&& (spr->mobj->z >= spr->mobj->floorz)) // Without this, your shadow shows on the floor, even after you die and fall through the ground.
+	{
+		////////////////////
+		// SHADOW SPRITE! //
+		////////////////////
+		HWR_DrawSpriteShadow(spr, gpatch, this_scale);
+	}
+
 	baseWallVerts[0].x = baseWallVerts[3].x = spr->x1;
 	baseWallVerts[2].x = baseWallVerts[1].x = spr->x2;
 	baseWallVerts[0].z = baseWallVerts[3].z = spr->z1;
 	baseWallVerts[1].z = baseWallVerts[2].z = spr->z2;
 
-	baseWallVerts[2].y = baseWallVerts[3].y = spr->gzt;
-	baseWallVerts[0].y = baseWallVerts[1].y = spr->gz;
+	baseWallVerts[2].y = baseWallVerts[3].y = spr->ty;
+	if (spr->mobj && fabsf(this_scale - 1.0f) > 1.0E-36f)
+		baseWallVerts[0].y = baseWallVerts[1].y = spr->ty - gpatch->height * this_scale;
+	else
+		baseWallVerts[0].y = baseWallVerts[1].y = spr->ty - gpatch->height;
 
 	v1x = FLOAT_TO_FIXED(spr->x1);
 	v1y = FLOAT_TO_FIXED(spr->z1);
@@ -3892,31 +4352,31 @@ static void HWR_SplitSprite(gl_vissprite_t *spr)
 
 	if (spr->flip)
 	{
-		baseWallVerts[0].s = baseWallVerts[3].s = ((GLPatch_t *)gpatch->hardware)->max_s;
-		baseWallVerts[2].s = baseWallVerts[1].s = 0;
+		baseWallVerts[0].sow = baseWallVerts[3].sow = gpatch->max_s;
+		baseWallVerts[2].sow = baseWallVerts[1].sow = 0;
 	}
 	else
 	{
-		baseWallVerts[0].s = baseWallVerts[3].s = 0;
-		baseWallVerts[2].s = baseWallVerts[1].s = ((GLPatch_t *)gpatch->hardware)->max_s;
+		baseWallVerts[0].sow = baseWallVerts[3].sow = 0;
+		baseWallVerts[2].sow = baseWallVerts[1].sow = gpatch->max_s;
 	}
 
 	// flip the texture coords (look familiar?)
 	if (spr->vflip)
 	{
-		baseWallVerts[3].t = baseWallVerts[2].t = ((GLPatch_t *)gpatch->hardware)->max_t;
-		baseWallVerts[0].t = baseWallVerts[1].t = 0;
+		baseWallVerts[3].tow = baseWallVerts[2].tow = gpatch->max_t;
+		baseWallVerts[0].tow = baseWallVerts[1].tow = 0;
 	}
 	else
 	{
-		baseWallVerts[3].t = baseWallVerts[2].t = 0;
-		baseWallVerts[0].t = baseWallVerts[1].t = ((GLPatch_t *)gpatch->hardware)->max_t;
+		baseWallVerts[3].tow = baseWallVerts[2].tow = 0;
+		baseWallVerts[0].tow = baseWallVerts[1].tow = gpatch->max_t;
 	}
 
 	// if it has a dispoffset, push it a little towards the camera
 	if (spr->dispoffset) {
-		float co = -gl_viewcos*(0.05f*spr->dispoffset);
-		float si = -gl_viewsin*(0.05f*spr->dispoffset);
+		float co = -gr_viewcos*(0.05f*spr->dispoffset);
+		float si = -gr_viewsin*(0.05f*spr->dispoffset);
 		baseWallVerts[0].z = baseWallVerts[3].z = baseWallVerts[0].z+si;
 		baseWallVerts[1].z = baseWallVerts[2].z = baseWallVerts[1].z+si;
 		baseWallVerts[0].x = baseWallVerts[3].x = baseWallVerts[0].x+co;
@@ -3924,129 +4384,126 @@ static void HWR_SplitSprite(gl_vissprite_t *spr)
 	}
 
 	// Let dispoffset work first since this adjust each vertex
-	HWR_RotateSpritePolyToAim(spr, baseWallVerts, false);
+	HWR_RotateSpritePolyToAim(spr, baseWallVerts);
 
 	realtop = top = baseWallVerts[3].y;
 	realbot = bot = baseWallVerts[0].y;
-	ttop = baseWallVerts[3].t;
-	tbot = baseWallVerts[0].t;
-	tmult = (tbot - ttop) / (top - bot);
+	towtop = baseWallVerts[3].tow;
+	towbot = baseWallVerts[0].tow;
+	towmult = (towbot - towtop) / (top - bot);
 
+#ifdef ESLOPE
 	endrealtop = endtop = baseWallVerts[2].y;
 	endrealbot = endbot = baseWallVerts[1].y;
+#endif
 
 	// copy the contents of baseWallVerts into the drawn wallVerts array
 	// baseWallVerts is used to know the final shape to easily get the vertex
 	// co-ordinates
 	memcpy(wallVerts, baseWallVerts, sizeof(baseWallVerts));
 
-	// if sprite has linkdraw, then dont write to z-buffer (by not using PF_Occlude)
-	// this will result in sprites drawn afterwards to be drawn on top like intended when using linkdraw.
-	if ((spr->mobj->flags2 & MF2_LINKDRAW) && spr->mobj->tracer)
-		occlusion = 0;
-	else
-		occlusion = PF_Occlude;
-
-	INT32 blendmode;
-	if (spr->mobj->frame & FF_BLENDMASK)
-		blendmode = ((spr->mobj->frame & FF_BLENDMASK) >> FF_BLENDSHIFT) + 1;
-	else
-		blendmode = spr->mobj->blendmode;
-
 	if (!cv_translucency.value) // translucency disabled
 	{
-		Surf.PolyColor.s.alpha = 0xFF;
-		blend = PF_Translucent|occlusion;
-		if (!occlusion) use_linkdraw_hack = true;
+		Surf.FlatColor.s.alpha = 0xFF;
+		blend = PF_Translucent|PF_Occlude;
 	}
 	else if (spr->mobj->flags2 & MF2_SHADOW)
 	{
-		Surf.PolyColor.s.alpha = 0x40;
-		blend = HWR_GetBlendModeFlag(blendmode);
+		Surf.FlatColor.s.alpha = 0x40;
+		blend = PF_Translucent;
 	}
 	else if (spr->mobj->frame & FF_TRANSMASK)
-	{
-		INT32 trans = (spr->mobj->frame & FF_TRANSMASK)>>FF_TRANSSHIFT;
-		blend = HWR_SurfaceBlend(blendmode, trans, &Surf);
-	}
+		blend = HWR_TranstableToAlpha((spr->mobj->frame & FF_TRANSMASK)>>FF_TRANSSHIFT, &Surf);
 	else
 	{
 		// BP: i agree that is little better in environement but it don't
 		//     work properly under glide nor with fogcolor to ffffff :(
 		// Hurdler: PF_Environement would be cool, but we need to fix
 		//          the issue with the fog before
-		Surf.PolyColor.s.alpha = 0xFF;
-		blend = HWR_GetBlendModeFlag(blendmode)|occlusion;
-		if (!occlusion) use_linkdraw_hack = true;
+		Surf.FlatColor.s.alpha = 0xFF;
+		blend = PF_Translucent|PF_Occlude;
 	}
 
-	if (HWR_UseShader())
-	{
-		shader = SHADER_SPRITE;
-		blend |= PF_ColorMapped;
-	}
-
-	alpha = Surf.PolyColor.s.alpha;
+	alpha = Surf.FlatColor.s.alpha;
 
 	// Start with the lightlevel and colormap from the top of the sprite
 	lightlevel = *list[sector->numlights - 1].lightlevel;
-	if (!(spr->mobj->renderflags & RF_NOCOLORMAPS))
-		colormap = *list[sector->numlights - 1].extra_colormap;
-
+	colormap = list[sector->numlights - 1].extra_colormap;
 	i = 0;
 	temp = FLOAT_TO_FIXED(realtop);
 
-	if (R_ThingIsFullBright(spr->mobj))
+	if (spr->mobj->frame & FF_FULLBRIGHT)
 		lightlevel = 255;
-	else if (R_ThingIsFullDark(spr->mobj))
-		lightlevel = 0;
-	else
-		lightset = false;
 
+#ifdef ESLOPE
 	for (i = 1; i < sector->numlights; i++)
 	{
-		fixed_t h = P_GetLightZAt(&sector->lightlist[i], spr->mobj->x, spr->mobj->y);
+		fixed_t h = sector->lightlist[i].slope ? P_GetZAt(sector->lightlist[i].slope, spr->mobj->x, spr->mobj->y)
+					: sector->lightlist[i].height;
 		if (h <= temp)
 		{
-			if (!lightset)
-				lightlevel = *list[i-1].lightlevel > 255 ? 255 : *list[i-1].lightlevel;
-			if (!(spr->mobj->renderflags & RF_NOCOLORMAPS))
-				colormap = *list[i-1].extra_colormap;
+			if (!(spr->mobj->frame & FF_FULLBRIGHT))
+				lightlevel = *list[i-1].lightlevel;
+			colormap = list[i-1].extra_colormap;
 			break;
 		}
 	}
-
-	if (R_ThingIsSemiBright(spr->mobj))
-		lightlevel = 128 + (lightlevel>>1);
+#else
+	i = R_GetPlaneLight(sector, temp, false);
+	if (!(spr->mobj->frame & FF_FULLBRIGHT))
+		lightlevel = *list[i].lightlevel;
+	colormap = list[i].extra_colormap;
+#endif
 
 	for (i = 0; i < sector->numlights; i++)
 	{
-		if (endtop < endrealbot && top < realbot)
+#ifdef ESLOPE
+		if (endtop < endrealbot)
+#endif
+		if (top < realbot)
 			return;
 
 		// even if we aren't changing colormap or lightlevel, we still need to continue drawing down the sprite
 		if (!(list[i].flags & FF_NOSHADE) && (list[i].flags & FF_CUTSPRITES))
 		{
-			if (!lightset)
-				lightlevel = *list[i].lightlevel > 255 ? 255 : *list[i].lightlevel;
-			if (!(spr->mobj->renderflags & RF_NOCOLORMAPS))
-				colormap = *list[i].extra_colormap;
+			if (!(spr->mobj->frame & FF_FULLBRIGHT))
+				lightlevel = *list[i].lightlevel;
+			colormap = list[i].extra_colormap;
 		}
 
+#ifdef ESLOPE
 		if (i + 1 < sector->numlights)
 		{
-			temp = P_GetLightZAt(&list[i+1], v1x, v1y);
-			bheight = FIXED_TO_FLOAT(temp);
-			temp = P_GetLightZAt(&list[i+1], v2x, v2y);
-			endbheight = FIXED_TO_FLOAT(temp);
+			if (list[i+1].slope)
+			{
+				temp = P_GetZAt(list[i+1].slope, v1x, v1y);
+				bheight = FIXED_TO_FLOAT(temp);
+				temp = P_GetZAt(list[i+1].slope, v2x, v2y);
+				endbheight = FIXED_TO_FLOAT(temp);
+			}
+			else
+				bheight = endbheight = FIXED_TO_FLOAT(list[i+1].height);
 		}
 		else
 		{
 			bheight = realbot;
 			endbheight = endrealbot;
 		}
+#else
+		if (i + 1 < sector->numlights)
+		{
+			bheight = FIXED_TO_FLOAT(list[i+1].height);
+		}
+		else
+		{
+			bheight = realbot;
+		}
+#endif
 
-		if (endbheight >= endtop && bheight >= top)
+#ifdef ESLOPE
+		if (endbheight >= endtop)
+#endif
+		if (bheight >= top)
 			continue;
 
 		bot = bheight;
@@ -4054,15 +4511,18 @@ static void HWR_SplitSprite(gl_vissprite_t *spr)
 		if (bot < realbot)
 			bot = realbot;
 
+#ifdef ESLOPE
 		endbot = endbheight;
 
 		if (endbot < endrealbot)
 			endbot = endrealbot;
+#endif
 
-		wallVerts[3].t = ttop + ((realtop - top) * tmult);
-		wallVerts[2].t = ttop + ((endrealtop - endtop) * tmult);
-		wallVerts[0].t = ttop + ((realtop - bot) * tmult);
-		wallVerts[1].t = ttop + ((endrealtop - endbot) * tmult);
+#ifdef ESLOPE
+		wallVerts[3].tow = towtop + ((realtop - top) * towmult);
+		wallVerts[2].tow = towtop + ((endrealtop - endtop) * towmult);
+		wallVerts[0].tow = towtop + ((realtop - bot) * towmult);
+		wallVerts[1].tow = towtop + ((endrealtop - endbot) * towmult);
 
 		wallVerts[3].y = top;
 		wallVerts[2].y = endtop;
@@ -4070,8 +4530,7 @@ static void HWR_SplitSprite(gl_vissprite_t *spr)
 		wallVerts[1].y = endbot;
 
 		// The x and y only need to be adjusted in the case that it's not a papersprite
-		if (cv_glspritebillboarding.value
-			&& spr->mobj && !R_ThingIsPaperSprite(spr->mobj))
+		if (cv_grspritebillboarding.value && spr->mobj)
 		{
 			// Get the x and z of the vertices so billboarding draws correctly
 			realheight = realbot - realtop;
@@ -4092,44 +4551,82 @@ static void HWR_SplitSprite(gl_vissprite_t *spr)
 			wallVerts[1].x = baseWallVerts[2].x + (baseWallVerts[2].x - baseWallVerts[1].x) * heightmult;
 			wallVerts[1].z = baseWallVerts[2].z + (baseWallVerts[2].z - baseWallVerts[1].z) * heightmult;
 		}
+#else
+		wallVerts[3].tow = wallVerts[2].tow = towtop + ((realtop - top) * towmult);
+		wallVerts[0].tow = wallVerts[1].tow = towtop + ((realtop - bot) * towmult);
 
-		HWR_Lighting(&Surf, lightlevel, colormap);
+		wallVerts[2].y = wallVerts[3].y = top;
+		wallVerts[0].y = wallVerts[1].y = bot;
 
-		Surf.PolyColor.s.alpha = alpha;
+		// The x and y only need to be adjusted in the case that it's not a papersprite
+		if (cv_grspritebillboarding.value && spr->mobj)
+		{
+			// Get the x and z of the vertices so billboarding draws correctly
+			realheight = realbot - realtop;
+			heightmult = (realtop - top) / realheight;
+			wallVerts[3].x = baseWallVerts[3].x + (baseWallVerts[3].x - baseWallVerts[0].x) * heightmult;
+			wallVerts[3].z = baseWallVerts[3].z + (baseWallVerts[3].z - baseWallVerts[0].z) * heightmult;
+			wallVerts[2].x = baseWallVerts[2].x + (baseWallVerts[2].x - baseWallVerts[1].x) * heightmult;
+			wallVerts[2].z = baseWallVerts[2].z + (baseWallVerts[2].z - baseWallVerts[1].z) * heightmult;
 
-		HWR_ProcessPolygon(&Surf, wallVerts, 4, blend|PF_Modulated, shader, false);
+			heightmult = (realtop - bot) / realheight;
+			wallVerts[0].x = baseWallVerts[3].x + (baseWallVerts[3].x - baseWallVerts[0].x) * heightmult;
+			wallVerts[0].z = baseWallVerts[3].z + (baseWallVerts[3].z - baseWallVerts[0].z) * heightmult;
+			wallVerts[1].x = baseWallVerts[2].x + (baseWallVerts[2].x - baseWallVerts[1].x) * heightmult;
+			wallVerts[1].z = baseWallVerts[2].z + (baseWallVerts[2].z - baseWallVerts[1].z) * heightmult;
+		}
+#endif
 
-		if (use_linkdraw_hack)
-			HWR_LinkDrawHackAdd(wallVerts, spr);
+		if (colormap)
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel, colormap->rgba, colormap->fadergba, false, false);
+		else
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel, NORMALFOG, FADEFOG, false, false);
+
+		Surf.FlatColor.s.alpha = alpha;
+
+		HWD.pfnDrawPolygon(&Surf, wallVerts, 4, blend|PF_Modulated|PF_Clip);
 
 		top = bot;
+#ifdef ESLOPE
 		endtop = endbot;
+#endif
 	}
 
 	bot = realbot;
+#ifdef ESLOPE
 	endbot = endrealbot;
-	if (endtop <= endrealbot && top <= realbot)
+	if (endtop <= endrealbot)
+#endif
+	if (top <= realbot)
 		return;
 
 	// If we're ever down here, somehow the above loop hasn't draw all the light levels of sprite
-	wallVerts[3].t = ttop + ((realtop - top) * tmult);
-	wallVerts[2].t = ttop + ((endrealtop - endtop) * tmult);
-	wallVerts[0].t = ttop + ((realtop - bot) * tmult);
-	wallVerts[1].t = ttop + ((endrealtop - endbot) * tmult);
+#ifdef ESLOPE
+	wallVerts[3].tow = towtop + ((realtop - top) * towmult);
+	wallVerts[2].tow = towtop + ((endrealtop - endtop) * towmult);
+	wallVerts[0].tow = towtop + ((realtop - bot) * towmult);
+	wallVerts[1].tow = towtop + ((endrealtop - endbot) * towmult);
 
 	wallVerts[3].y = top;
 	wallVerts[2].y = endtop;
 	wallVerts[0].y = bot;
 	wallVerts[1].y = endbot;
+#else
+	wallVerts[3].tow = wallVerts[2].tow = towtop + ((realtop - top) * towmult);
+	wallVerts[0].tow = wallVerts[1].tow = towtop + ((realtop - bot) * towmult);
 
-	HWR_Lighting(&Surf, lightlevel, colormap);
+	wallVerts[2].y = wallVerts[3].y = top;
+	wallVerts[0].y = wallVerts[1].y = bot;
+#endif
 
-	Surf.PolyColor.s.alpha = alpha;
+	if (colormap)
+		Surf.FlatColor.rgba = HWR_Lighting(lightlevel, colormap->rgba, colormap->fadergba, false, false);
+	else
+		Surf.FlatColor.rgba = HWR_Lighting(lightlevel, NORMALFOG, FADEFOG, false, false);
 
-	HWR_ProcessPolygon(&Surf, wallVerts, 4, blend|PF_Modulated, shader, false);
+	Surf.FlatColor.s.alpha = alpha;
 
-	if (use_linkdraw_hack)
-		HWR_LinkDrawHackAdd(wallVerts, spr);
+	HWD.pfnDrawPolygon(&Surf, wallVerts, 4, blend|PF_Modulated|PF_Clip);
 }
 
 // -----------------+
@@ -4137,12 +4634,17 @@ static void HWR_SplitSprite(gl_vissprite_t *spr)
 //                  : (monsters, bonuses, weapons, lights, ...)
 // Returns          :
 // -----------------+
-static void HWR_DrawSprite(gl_vissprite_t *spr)
+static void HWR_DrawSprite(gr_vissprite_t *spr)
 {
+	float this_scale = 1.0f;
 	FOutVector wallVerts[4];
-	patch_t *gpatch;
+	GLPatch_t *gpatch; // sprite patch converted to hardware
 	FSurfaceInfo Surf;
-	const boolean splat = R_ThingIsFloorSprite(spr->mobj);
+	const boolean hires = (spr->mobj && spr->mobj->skin && ((skin_t *)spr->mobj->skin)->flags & SF_HIRES);
+	if (spr->mobj)
+		this_scale = FIXED_TO_FLOAT(spr->mobj->scale);
+	if (hires)
+		this_scale = this_scale * FIXED_TO_FLOAT(((skin_t *)spr->mobj->skin)->highresscale);
 
 	if (!spr->mobj)
 		return;
@@ -4150,7 +4652,7 @@ static void HWR_DrawSprite(gl_vissprite_t *spr)
 	if (!spr->mobj->subsector)
 		return;
 
-	if (spr->mobj->subsector->sector->numlights && !splat)
+	if (spr->mobj->subsector->sector->numlights)
 	{
 		HWR_SplitSprite(spr);
 		return;
@@ -4162,7 +4664,7 @@ static void HWR_DrawSprite(gl_vissprite_t *spr)
 	//          sure to do it the right way. So actually, we keep normal sprite
 	//          in memory and we add the md2 model if it exists for that sprite
 
-	gpatch = spr->gpatch;
+	gpatch = W_CachePatchNum(spr->patchlumpnum, PU_CACHE);
 
 #ifdef ALAM_LIGHTING
 	if (!(spr->mobj->flags2 & MF2_DEBRIS) && (spr->mobj->sprite != SPR_PLAY ||
@@ -4177,125 +4679,37 @@ static void HWR_DrawSprite(gl_vissprite_t *spr)
 	//  |/ |
 	//  0--1
 
-	if (splat)
-	{
-		F2DCoord verts[4];
-		F2DCoord rotated[4];
-
-		angle_t angle;
-		float ca, sa;
-		float w, h;
-		float xscale, yscale;
-		float xoffset, yoffset;
-		float leftoffset, topoffset;
-		float scale = spr->scale;
-		float zoffset = (P_MobjFlip(spr->mobj) * 0.05f);
-		pslope_t *splatslope = NULL;
-		INT32 i;
-
-		renderflags_t renderflags = spr->renderflags;
-		if (renderflags & RF_SHADOWEFFECTS)
-			scale *= spr->shadowscale;
-
-		if (spr->rotateflags & SRF_3D || renderflags & RF_NOSPLATBILLBOARD)
-			angle = spr->mobj->angle;
-		else
-			angle = viewangle;
-
-		if (!spr->rotated)
-			angle += spr->mobj->rollangle;
-
-		angle = -angle;
-		angle += ANGLE_90;
-
-		topoffset = spr->spriteyoffset;
-		leftoffset = spr->spritexoffset;
-		if (spr->flip)
-			leftoffset = ((float)gpatch->width - leftoffset);
-
-		xscale = spr->scale * spr->spritexscale;
-		yscale = spr->scale * spr->spriteyscale;
-
-		xoffset = leftoffset * xscale;
-		yoffset = topoffset * yscale;
-
-		w = (float)gpatch->width * xscale;
-		h = (float)gpatch->height * yscale;
-
-		// Set positions
-
-		// 3--2
-		// |  |
-		// 0--1
-
-		verts[3].x = -xoffset;
-		verts[3].y = yoffset;
-
-		verts[2].x = w - xoffset;
-		verts[2].y = yoffset;
-
-		verts[1].x = w - xoffset;
-		verts[1].y = -h + yoffset;
-
-		verts[0].x = -xoffset;
-		verts[0].y = -h + yoffset;
-
-		ca = FIXED_TO_FLOAT(FINECOSINE((-angle)>>ANGLETOFINESHIFT));
-		sa = FIXED_TO_FLOAT(FINESINE((-angle)>>ANGLETOFINESHIFT));
-
-		// Rotate
-		for (i = 0; i < 4; i++)
-		{
-			rotated[i].x = (verts[i].x * ca) - (verts[i].y * sa);
-			rotated[i].y = (verts[i].x * sa) + (verts[i].y * ca);
-		}
-
-		// Translate
-		for (i = 0; i < 4; i++)
-		{
-			wallVerts[i].x = rotated[i].x + FIXED_TO_FLOAT(spr->mobj->x);
-			wallVerts[i].z = rotated[i].y + FIXED_TO_FLOAT(spr->mobj->y);
-		}
-
-		if (renderflags & (RF_SLOPESPLAT | RF_OBJECTSLOPESPLAT))
-		{
-			pslope_t *standingslope = spr->mobj->standingslope; // The slope that the object is standing on.
-
-			// The slope that was defined for the sprite.
-			if (renderflags & RF_SLOPESPLAT)
-				splatslope = spr->mobj->floorspriteslope;
-
-			if (standingslope && (renderflags & RF_OBJECTSLOPESPLAT))
-				splatslope = standingslope;
-		}
-
-		// Set vertical position
-		if (splatslope)
-		{
-			for (i = 0; i < 4; i++)
-			{
-				fixed_t slopez = P_GetSlopeZAt(splatslope, FLOAT_TO_FIXED(wallVerts[i].x), FLOAT_TO_FIXED(wallVerts[i].z));
-				wallVerts[i].y = FIXED_TO_FLOAT(slopez) + zoffset;
-			}
-		}
-		else
-		{
-			for (i = 0; i < 4; i++)
-				wallVerts[i].y = FIXED_TO_FLOAT(spr->mobj->z) + zoffset;
-		}
-	}
+	// these were already scaled in HWR_ProjectSprite
+	wallVerts[0].x = wallVerts[3].x = spr->x1;
+	wallVerts[2].x = wallVerts[1].x = spr->x2;
+	wallVerts[2].y = wallVerts[3].y = spr->ty;
+	if (spr->mobj && fabsf(this_scale - 1.0f) > 1.0E-36f)
+		wallVerts[0].y = wallVerts[1].y = spr->ty - gpatch->height * this_scale;
 	else
-	{
-		// these were already scaled in HWR_ProjectSprite
-		wallVerts[0].x = wallVerts[3].x = spr->x1;
-		wallVerts[2].x = wallVerts[1].x = spr->x2;
-		wallVerts[2].y = wallVerts[3].y = spr->gzt;
-		wallVerts[0].y = wallVerts[1].y = spr->gz;
+		wallVerts[0].y = wallVerts[1].y = spr->ty - gpatch->height;
 
-		// make a wall polygon (with 2 triangles), using the floor/ceiling heights,
-		// and the 2d map coords of start/end vertices
-		wallVerts[0].z = wallVerts[3].z = spr->z1;
-		wallVerts[1].z = wallVerts[2].z = spr->z2;
+	// make a wall polygon (with 2 triangles), using the floor/ceiling heights,
+	// and the 2d map coords of start/end vertices
+	wallVerts[0].z = wallVerts[3].z = spr->z1;
+	wallVerts[1].z = wallVerts[2].z = spr->z2;
+
+	if (spr->flip)
+	{
+		wallVerts[0].sow = wallVerts[3].sow = gpatch->max_s;
+		wallVerts[2].sow = wallVerts[1].sow = 0;
+	}else{
+		wallVerts[0].sow = wallVerts[3].sow = 0;
+		wallVerts[2].sow = wallVerts[1].sow = gpatch->max_s;
+	}
+
+	// flip the texture coords (look familiar?)
+	if (spr->vflip)
+	{
+		wallVerts[3].tow = wallVerts[2].tow = gpatch->max_t;
+		wallVerts[0].tow = wallVerts[1].tow = 0;
+	}else{
+		wallVerts[3].tow = wallVerts[2].tow = 0;
+		wallVerts[0].tow = wallVerts[1].tow = gpatch->max_t;
 	}
 
 	// cache the patch in the graphics card memory
@@ -4303,40 +4717,34 @@ static void HWR_DrawSprite(gl_vissprite_t *spr)
 	//Hurdler: 25/04/2000: now support colormap in hardware mode
 	HWR_GetMappedPatch(gpatch, spr->colormap);
 
-	if (spr->flip)
+	// Draw shadow BEFORE sprite
+	if (cv_shadow.value // Shadows enabled
+		&& (spr->mobj->flags & (MF_SCENERY|MF_SPAWNCEILING|MF_NOGRAVITY)) != (MF_SCENERY|MF_SPAWNCEILING|MF_NOGRAVITY) // Ceiling scenery have no shadow.
+		&& !(spr->mobj->flags2 & MF2_DEBRIS) // Debris have no corona or shadow.
+#ifdef ALAM_LIGHTING
+		&& !(t_lspr[spr->mobj->sprite]->type // Things with dynamic lights have no shadow.
+		&& (!spr->mobj->player || spr->mobj->player->powers[pw_super])) // Except for non-super players.
+#endif
+		&& (spr->mobj->z >= spr->mobj->floorz)) // Without this, your shadow shows on the floor, even after you die and fall through the ground.
 	{
-		wallVerts[0].s = wallVerts[3].s = ((GLPatch_t *)gpatch->hardware)->max_s;
-		wallVerts[2].s = wallVerts[1].s = 0;
-	}else{
-		wallVerts[0].s = wallVerts[3].s = 0;
-		wallVerts[2].s = wallVerts[1].s = ((GLPatch_t *)gpatch->hardware)->max_s;
+		////////////////////
+		// SHADOW SPRITE! //
+		////////////////////
+		HWR_DrawSpriteShadow(spr, gpatch, this_scale);
 	}
 
-	// flip the texture coords (look familiar?)
-	if (spr->vflip)
-	{
-		wallVerts[3].t = wallVerts[2].t = ((GLPatch_t *)gpatch->hardware)->max_t;
-		wallVerts[0].t = wallVerts[1].t = 0;
-	}else{
-		wallVerts[3].t = wallVerts[2].t = 0;
-		wallVerts[0].t = wallVerts[1].t = ((GLPatch_t *)gpatch->hardware)->max_t;
+	// if it has a dispoffset, push it a little towards the camera
+	if (spr->dispoffset) {
+		float co = -gr_viewcos*(0.05f*spr->dispoffset);
+		float si = -gr_viewsin*(0.05f*spr->dispoffset);
+		wallVerts[0].z = wallVerts[3].z = wallVerts[0].z+si;
+		wallVerts[1].z = wallVerts[2].z = wallVerts[1].z+si;
+		wallVerts[0].x = wallVerts[3].x = wallVerts[0].x+co;
+		wallVerts[1].x = wallVerts[2].x = wallVerts[1].x+co;
 	}
 
-	if (!splat)
-	{
-		// if it has a dispoffset, push it a little towards the camera
-		if (spr->dispoffset) {
-			float co = -gl_viewcos*(0.05f*spr->dispoffset);
-			float si = -gl_viewsin*(0.05f*spr->dispoffset);
-			wallVerts[0].z = wallVerts[3].z = wallVerts[0].z+si;
-			wallVerts[1].z = wallVerts[2].z = wallVerts[1].z+si;
-			wallVerts[0].x = wallVerts[3].x = wallVerts[0].x+co;
-			wallVerts[1].x = wallVerts[2].x = wallVerts[1].x+co;
-		}
-
-		// Let dispoffset work first since this adjust each vertex
-		HWR_RotateSpritePolyToAim(spr, wallVerts, false);
-	}
+	// Let dispoffset work first since this adjust each vertex
+	HWR_RotateSpritePolyToAim(spr, wallVerts);
 
 	// This needs to be AFTER the shadows so that the regular sprites aren't drawn completely black.
 	// sprite lighting by modulating the RGB components
@@ -4345,118 +4753,53 @@ static void HWR_DrawSprite(gl_vissprite_t *spr)
 	// colormap test
 	{
 		sector_t *sector = spr->mobj->subsector->sector;
-		UINT8 lightlevel = 0;
-		boolean lightset = true;
-		extracolormap_t *colormap = NULL;
+		UINT8 lightlevel = 255;
+		extracolormap_t *colormap = sector->extra_colormap;
 
-		if (R_ThingIsFullBright(spr->mobj))
-			lightlevel = 255;
-		else if (R_ThingIsFullDark(spr->mobj))
-			lightlevel = 0;
+		if (!(spr->mobj->frame & FF_FULLBRIGHT))
+			lightlevel = sector->lightlevel;
+
+		if (colormap)
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel, colormap->rgba, colormap->fadergba, false, false);
 		else
-			lightset = false;
-
-		if (!(spr->mobj->renderflags & RF_NOCOLORMAPS))
-			colormap = sector->extra_colormap;
-
-		if (splat && sector->numlights)
-		{
-			INT32 light = R_GetPlaneLight(sector, spr->mobj->z, false);
-
-			if (!lightset)
-				lightlevel = *sector->lightlist[light].lightlevel > 255 ? 255 : *sector->lightlist[light].lightlevel;
-
-			if (*sector->lightlist[light].extra_colormap && !(spr->mobj->renderflags & RF_NOCOLORMAPS))
-				colormap = *sector->lightlist[light].extra_colormap;
-		}
-		else if (!lightset)
-			lightlevel = sector->lightlevel > 255 ? 255 : sector->lightlevel;
-
-		if (R_ThingIsSemiBright(spr->mobj))
-			lightlevel = 128 + (lightlevel>>1);
-
-		HWR_Lighting(&Surf, lightlevel, colormap);
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel, NORMALFOG, FADEFOG, false, false);
 	}
 
 	{
-		INT32 shader = -1;
 		FBITFIELD blend = 0;
-		FBITFIELD occlusion;
-		boolean use_linkdraw_hack = false;
-
-		// if sprite has linkdraw, then dont write to z-buffer (by not using PF_Occlude)
-		// this will result in sprites drawn afterwards to be drawn on top like intended when using linkdraw.
-		if ((spr->mobj->flags2 & MF2_LINKDRAW) && spr->mobj->tracer)
-			occlusion = 0;
-		else
-			occlusion = PF_Occlude;
-
-		INT32 blendmode;
-		if (spr->mobj->frame & FF_BLENDMASK)
-			blendmode = ((spr->mobj->frame & FF_BLENDMASK) >> FF_BLENDSHIFT) + 1;
-		else
-			blendmode = spr->mobj->blendmode;
-
 		if (!cv_translucency.value) // translucency disabled
 		{
-			Surf.PolyColor.s.alpha = 0xFF;
-			blend = PF_Translucent|occlusion;
-			if (!occlusion) use_linkdraw_hack = true;
+			Surf.FlatColor.s.alpha = 0xFF;
+			blend = PF_Translucent|PF_Occlude;
 		}
 		else if (spr->mobj->flags2 & MF2_SHADOW)
 		{
-			Surf.PolyColor.s.alpha = 0x40;
-			blend = HWR_GetBlendModeFlag(blendmode);
+			Surf.FlatColor.s.alpha = 0x40;
+			blend = PF_Translucent;
 		}
 		else if (spr->mobj->frame & FF_TRANSMASK)
-		{
-			INT32 trans = (spr->mobj->frame & FF_TRANSMASK)>>FF_TRANSSHIFT;
-			blend = HWR_SurfaceBlend(blendmode, trans, &Surf);
-		}
+			blend = HWR_TranstableToAlpha((spr->mobj->frame & FF_TRANSMASK)>>FF_TRANSSHIFT, &Surf);
 		else
 		{
 			// BP: i agree that is little better in environement but it don't
 			//     work properly under glide nor with fogcolor to ffffff :(
 			// Hurdler: PF_Environement would be cool, but we need to fix
 			//          the issue with the fog before
-			Surf.PolyColor.s.alpha = 0xFF;
-			blend = HWR_GetBlendModeFlag(blendmode)|occlusion;
-			if (!occlusion) use_linkdraw_hack = true;
+			Surf.FlatColor.s.alpha = 0xFF;
+			blend = PF_Translucent|PF_Occlude;
 		}
 
-		if (spr->renderflags & RF_SHADOWEFFECTS)
-		{
-			INT32 alpha = Surf.PolyColor.s.alpha;
-			alpha -= ((INT32)(spr->shadowheight / 4.0f)) + 75;
-			if (alpha < 1)
-				return;
-
-			Surf.PolyColor.s.alpha = (UINT8)(alpha);
-			blend = PF_Translucent|occlusion;
-			if (!occlusion) use_linkdraw_hack = true;
-		}
-
-		if (HWR_UseShader())
-		{
-			shader = SHADER_SPRITE;
-			blend |= PF_ColorMapped;
-		}
-
-		HWR_ProcessPolygon(&Surf, wallVerts, 4, blend|PF_Modulated, shader, false);
-
-		if (use_linkdraw_hack)
-			HWR_LinkDrawHackAdd(wallVerts, spr);
+		HWD.pfnDrawPolygon(&Surf, wallVerts, 4, blend|PF_Modulated|PF_Clip);
 	}
 }
 
 #ifdef HWPRECIP
 // Sprite drawer for precipitation
-static inline void HWR_DrawPrecipitationSprite(gl_vissprite_t *spr)
+static inline void HWR_DrawPrecipitationSprite(gr_vissprite_t *spr)
 {
-	INT32 shader = -1;
 	FBITFIELD blend = 0;
 	FOutVector wallVerts[4];
-	patch_t *gpatch;
+	GLPatch_t *gpatch; // sprite patch converted to hardware
 	FSurfaceInfo Surf;
 
 	if (!spr->mobj)
@@ -4466,7 +4809,7 @@ static inline void HWR_DrawPrecipitationSprite(gl_vissprite_t *spr)
 		return;
 
 	// cache sprite graphics
-	gpatch = spr->gpatch;
+	gpatch = W_CachePatchNum(spr->patchlumpnum, PU_CACHE);
 
 	// create the sprite billboard
 	//
@@ -4476,8 +4819,8 @@ static inline void HWR_DrawPrecipitationSprite(gl_vissprite_t *spr)
 	//  0--1
 	wallVerts[0].x = wallVerts[3].x = spr->x1;
 	wallVerts[2].x = wallVerts[1].x = spr->x2;
-	wallVerts[2].y = wallVerts[3].y = spr->gzt;
-	wallVerts[0].y = wallVerts[1].y = spr->gz;
+	wallVerts[2].y = wallVerts[3].y = spr->ty;
+	wallVerts[0].y = wallVerts[1].y = spr->ty - gpatch->height;
 
 	// make a wall polygon (with 2 triangles), using the floor/ceiling heights,
 	// and the 2d map coords of start/end vertices
@@ -4485,13 +4828,13 @@ static inline void HWR_DrawPrecipitationSprite(gl_vissprite_t *spr)
 	wallVerts[1].z = wallVerts[2].z = spr->z2;
 
 	// Let dispoffset work first since this adjust each vertex
-	HWR_RotateSpritePolyToAim(spr, wallVerts, true);
+	HWR_RotateSpritePolyToAim(spr, wallVerts);
 
-	wallVerts[0].s = wallVerts[3].s = 0;
-	wallVerts[2].s = wallVerts[1].s = ((GLPatch_t *)gpatch->hardware)->max_s;
+	wallVerts[0].sow = wallVerts[3].sow = 0;
+	wallVerts[2].sow = wallVerts[1].sow = gpatch->max_s;
 
-	wallVerts[3].t = wallVerts[2].t = 0;
-	wallVerts[0].t = wallVerts[1].t = ((GLPatch_t *)gpatch->hardware)->max_t;
+	wallVerts[3].tow = wallVerts[2].tow = 0;
+	wallVerts[0].tow = wallVerts[1].tow = gpatch->max_t;
 
 	// cache the patch in the graphics card memory
 	//12/12/99: Hurdler: same comment as above (for md2)
@@ -4506,147 +4849,159 @@ static inline void HWR_DrawPrecipitationSprite(gl_vissprite_t *spr)
 
 		if (sector->numlights)
 		{
-			// Always use the light at the top instead of whatever I was doing before
-			INT32 light = R_GetPlaneLight(sector, spr->mobj->z + spr->mobj->height, false);
+			INT32 light;
 
-			if (!R_ThingIsFullBright(spr->mobj))
-				lightlevel = *sector->lightlist[light].lightlevel > 255 ? 255 : *sector->lightlist[light].lightlevel;
+			light = R_GetPlaneLight(sector, spr->mobj->z + spr->mobj->height, false); // Always use the light at the top instead of whatever I was doing before
 
-			if (*sector->lightlist[light].extra_colormap)
-				colormap = *sector->lightlist[light].extra_colormap;
+			if (!(spr->mobj->frame & FF_FULLBRIGHT))
+				lightlevel = *sector->lightlist[light].lightlevel;
+
+			if (sector->lightlist[light].extra_colormap)
+				colormap = sector->lightlist[light].extra_colormap;
 		}
 		else
 		{
-			if (!R_ThingIsFullBright(spr->mobj))
-				lightlevel = sector->lightlevel > 255 ? 255 : sector->lightlevel;
+			if (!(spr->mobj->frame & FF_FULLBRIGHT))
+				lightlevel = sector->lightlevel;
 
 			if (sector->extra_colormap)
 				colormap = sector->extra_colormap;
 		}
 
-		HWR_Lighting(&Surf, lightlevel, colormap);
+		if (colormap)
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel, colormap->rgba, colormap->fadergba, false, false);
+		else
+			Surf.FlatColor.rgba = HWR_Lighting(lightlevel, NORMALFOG, FADEFOG, false, false);
 	}
 
-	if (spr->mobj->frame & FF_TRANSMASK)
+	if (spr->mobj->flags2 & MF2_SHADOW)
 	{
-		INT32 trans = (spr->mobj->frame & FF_TRANSMASK)>>FF_TRANSSHIFT;
-		blend = HWR_SurfaceBlend(AST_TRANSLUCENT, trans, &Surf);
+		Surf.FlatColor.s.alpha = 0x40;
+		blend = PF_Translucent;
 	}
+	else if (spr->mobj->frame & FF_TRANSMASK)
+		blend = HWR_TranstableToAlpha((spr->mobj->frame & FF_TRANSMASK)>>FF_TRANSSHIFT, &Surf);
 	else
 	{
 		// BP: i agree that is little better in environement but it don't
 		//     work properly under glide nor with fogcolor to ffffff :(
 		// Hurdler: PF_Environement would be cool, but we need to fix
 		//          the issue with the fog before
-		Surf.PolyColor.s.alpha = 0xFF;
-		blend = HWR_GetBlendModeFlag(spr->mobj->blendmode)|PF_Occlude;
+		Surf.FlatColor.s.alpha = 0xFF;
+		blend = PF_Translucent|PF_Occlude;
 	}
 
-	if (HWR_UseShader())
-	{
-		shader = SHADER_SPRITE;
-		blend |= PF_ColorMapped;
-	}
-
-	HWR_ProcessPolygon(&Surf, wallVerts, 4, blend|PF_Modulated, shader, false);
+	HWD.pfnDrawPolygon(&Surf, wallVerts, 4, blend|PF_Modulated|PF_Clip);
 }
 #endif
 
 // --------------------------------------------------------------------------
 // Sort vissprites by distance
 // --------------------------------------------------------------------------
-gl_vissprite_t* gl_vsprorder[MAXVISSPRITES];
+static gr_vissprite_t gr_vsprsortedhead;
 
-// Note: For more correct transparency the transparent sprites would need to be
-// sorted and drawn together with transparent surfaces.
-static int CompareVisSprites(const void *p1, const void *p2)
+static void HWR_SortVisSprites(void)
 {
-	gl_vissprite_t* spr1 = *(gl_vissprite_t*const*)p1;
-	gl_vissprite_t* spr2 = *(gl_vissprite_t*const*)p2;
-	int idiff;
-	float fdiff;
-	float tz1, tz2;
+	UINT32 i;
+	gr_vissprite_t *ds, *dsprev, *dsnext, *dsfirst;
+	gr_vissprite_t *best = NULL;
+	gr_vissprite_t unsorted;
+	float bestdist = 0.0f;
+	INT32 bestdispoffset = 0;
 
-	// Make transparent sprites last. Comment from the previous sort implementation:
+	if (!gr_visspritecount)
+		return;
+
+	dsfirst = HWR_GetVisSprite(0);
+
+	for (i = 0, dsnext = dsfirst, ds = NULL; i < gr_visspritecount; i++)
+	{
+		dsprev = ds;
+		ds = dsnext;
+		if (i < gr_visspritecount - 1) dsnext = HWR_GetVisSprite(i + 1);
+
+		ds->next = dsnext;
+		ds->prev = dsprev;
+	}
+
+	// Fix first and last. ds still points to the last one after the loop
+	dsfirst->prev = &unsorted;
+	unsorted.next = dsfirst;
+	if (ds)
+		ds->next = &unsorted;
+	unsorted.prev = ds;
+
+	// pull the vissprites out by scale
+	gr_vsprsortedhead.next = gr_vsprsortedhead.prev = &gr_vsprsortedhead;
+	for (i = 0; i < gr_visspritecount; i++)
+	{
+		best = NULL;
+		for (ds = unsorted.next; ds != &unsorted; ds = ds->next)
+		{
+			if (!best || ds->tz > bestdist)
+			{
+				bestdist = ds->tz;
+				bestdispoffset = ds->dispoffset;
+				best = ds;
+			}
+			// order visprites of same scale by dispoffset, smallest first
+			else if (fabsf(ds->tz - bestdist) < 1.0E-36f && ds->dispoffset < bestdispoffset)
+			{
+				bestdispoffset = ds->dispoffset;
+				best = ds;
+			}
+		}
+		if (best)
+		{
+			best->next->prev = best->prev;
+			best->prev->next = best->next;
+			best->next = &gr_vsprsortedhead;
+			best->prev = gr_vsprsortedhead.prev;
+		}
+		gr_vsprsortedhead.prev->next = best;
+		gr_vsprsortedhead.prev = best;
+	}
+
 	// Sryder:	Oh boy, while it's nice having ALL the sprites sorted properly, it fails when we bring MD2's into the
 	//			mix and they want to be translucent. So let's place all the translucent sprites and MD2's AFTER
 	//			everything else, but still ordered of course, the depth buffer can handle the opaque ones plenty fine.
 	//			We just need to move all translucent ones to the end in order
 	// TODO:	Fully sort all sprites and MD2s with walls and floors, this part will be unnecessary after that
-	int transparency1;
-	int transparency2;
-
-	// check for precip first, because then sprX->mobj is actually a precipmobj_t and does not have flags2 or tracer
-	int linkdraw1 = !spr1->precip && (spr1->mobj->flags2 & MF2_LINKDRAW) && spr1->mobj->tracer;
-	int linkdraw2 = !spr2->precip && (spr2->mobj->flags2 & MF2_LINKDRAW) && spr2->mobj->tracer;
-
-	// ^ is the XOR operation
-	// if comparing a linkdraw and non-linkdraw sprite or 2 linkdraw sprites with different tracers, then use
-	// the tracer's properties instead of the main sprite's.
-	if ((linkdraw1 && linkdraw2 && spr1->mobj->tracer != spr2->mobj->tracer) || (linkdraw1 ^ linkdraw2))
+	best = gr_vsprsortedhead.next;
+	for (i = 0; i < gr_visspritecount; i++)
 	{
-		if (linkdraw1)
+		if ((best->mobj->flags2 & MF2_SHADOW) || (best->mobj->frame & FF_TRANSMASK))
 		{
-			tz1 = spr1->tracertz;
-			transparency1 = (spr1->mobj->tracer->flags2 & MF2_SHADOW) || (spr1->mobj->tracer->frame & FF_TRANSMASK);
+			if (best == gr_vsprsortedhead.next)
+			{
+				gr_vsprsortedhead.next = best->next;
+			}
+			best->prev->next = best->next;
+			best->next->prev = best->prev;
+			best->prev = gr_vsprsortedhead.prev;
+			gr_vsprsortedhead.prev->next = best;
+			gr_vsprsortedhead.prev = best;
+			ds = best;
+			best = best->next;
+			ds->next = &gr_vsprsortedhead;
 		}
 		else
-		{
-			tz1 = spr1->tz;
-			transparency1 = (!spr1->precip && (spr1->mobj->flags2 & MF2_SHADOW)) || (spr1->mobj->frame & FF_TRANSMASK);
-		}
-		if (linkdraw2)
-		{
-			tz2 = spr2->tracertz;
-			transparency2 = (spr2->mobj->tracer->flags2 & MF2_SHADOW) || (spr2->mobj->tracer->frame & FF_TRANSMASK);
-		}
-		else
-		{
-			tz2 = spr2->tz;
-			transparency2 = (!spr2->precip && (spr2->mobj->flags2 & MF2_SHADOW)) || (spr2->mobj->frame & FF_TRANSMASK);
-		}
+			best = best->next;
 	}
-	else
-	{
-		tz1 = spr1->tz;
-		transparency1 = (!spr1->precip && (spr1->mobj->flags2 & MF2_SHADOW)) || (spr1->mobj->frame & FF_TRANSMASK);
-		tz2 = spr2->tz;
-		transparency2 = (!spr2->precip && (spr2->mobj->flags2 & MF2_SHADOW)) || (spr2->mobj->frame & FF_TRANSMASK);
-	}
-
-	// first compare transparency flags, then compare tz, then compare dispoffset
-
-	idiff = transparency1 - transparency2;
-	if (idiff != 0) return idiff;
-
-	fdiff = tz2 - tz1; // this order seems correct when checking with apitrace. Back to front.
-	if (fabsf(fdiff) < 1.0E-36f)
-		return spr1->dispoffset - spr2->dispoffset; // smallest dispoffset first if sprites are at (almost) same location.
-	else if (fdiff > 0)
-		return 1;
-	else
-		return -1;
-}
-
-static void HWR_SortVisSprites(void)
-{
-	UINT32 i;
-	for (i = 0; i < gl_visspritecount; i++)
-	{
-		gl_vsprorder[i] = HWR_GetVisSprite(i);
-	}
-	qsort(gl_vsprorder, gl_visspritecount, sizeof(gl_vissprite_t*), CompareVisSprites);
 }
 
 // A drawnode is something that points to a 3D floor, 3D side, or masked
 // middle texture. This is used for sorting with sprites.
 typedef struct
 {
-	FOutVector    wallVerts[4];
+	wallVert3D    wallVerts[4];
 	FSurfaceInfo  Surf;
 	INT32         texnum;
 	FBITFIELD     blend;
 	INT32         drawcount;
+#ifndef SORTING
+	fixed_t       fixedheight;
+#endif
 	boolean fogwall;
 	INT32 lightlevel;
 	extracolormap_t *wallcolormap; // Doing the lighting in HWR_RenderWall now for correct fog after sorting
@@ -4655,7 +5010,7 @@ typedef struct
 static wallinfo_t *wallinfo = NULL;
 static size_t numwalls = 0; // a list of transparent walls to be drawn
 
-void HWR_RenderWall(FOutVector *wallVerts, FSurfaceInfo *pSurf, FBITFIELD blend, boolean fogwall, INT32 lightlevel, extracolormap_t *wallcolormap);
+static void HWR_RenderWall(wallVert3D   *wallVerts, FSurfaceInfo *pSurf, FBITFIELD blend, boolean fogwall, INT32 lightlevel, extracolormap_t *wallcolormap);
 
 #define MAX_TRANSPARENTWALL 256
 
@@ -4665,7 +5020,7 @@ typedef struct
 	boolean isceiling;
 	fixed_t fixedheight;
 	INT32 lightlevel;
-	levelflat_t *levelflat;
+	lumpnum_t lumpnum;
 	INT32 alpha;
 	sector_t *FOFSector;
 	FBITFIELD blend;
@@ -4683,7 +5038,7 @@ typedef struct
 	boolean isceiling;
 	fixed_t fixedheight;
 	INT32 lightlevel;
-	levelflat_t *levelflat;
+	lumpnum_t lumpnum;
 	INT32 alpha;
 	sector_t *FOFSector;
 	FBITFIELD blend;
@@ -4694,24 +5049,30 @@ typedef struct
 static size_t numpolyplanes = 0; // a list of transparent poyobject floors to be drawn
 static polyplaneinfo_t *polyplaneinfo = NULL;
 
+#ifndef SORTING
+size_t numfloors = 0;
+#else
+//static floorinfo_t *floorinfo = NULL;
+//static size_t numfloors = 0;
 //Hurdler: 3D water sutffs
-typedef struct gl_drawnode_s
+typedef struct gr_drawnode_s
 {
 	planeinfo_t *plane;
 	polyplaneinfo_t *polyplane;
 	wallinfo_t *wall;
-	gl_vissprite_t *sprite;
+	gr_vissprite_t *sprite;
 
-//	struct gl_drawnode_s *next;
-//	struct gl_drawnode_s *prev;
-} gl_drawnode_t;
+//	struct gr_drawnode_s *next;
+//	struct gr_drawnode_s *prev;
+} gr_drawnode_t;
 
 static INT32 drawcount = 0;
 
 #define MAX_TRANSPARENTFLOOR 512
 
 // This will likely turn into a copy of HWR_Add3DWater and replace it.
-void HWR_AddTransparentFloor(levelflat_t *levelflat, extrasubsector_t *xsub, boolean isceiling, fixed_t fixedheight, INT32 lightlevel, INT32 alpha, sector_t *FOFSector, FBITFIELD blend, boolean fogplane, extracolormap_t *planecolormap)
+void HWR_AddTransparentFloor(lumpnum_t lumpnum, extrasubsector_t *xsub, boolean isceiling,
+	fixed_t fixedheight, INT32 lightlevel, INT32 alpha, sector_t *FOFSector, FBITFIELD blend, boolean fogplane, extracolormap_t *planecolormap)
 {
 	static size_t allocedplanes = 0;
 
@@ -4727,8 +5088,8 @@ void HWR_AddTransparentFloor(levelflat_t *levelflat, extrasubsector_t *xsub, boo
 
 	planeinfo[numplanes].isceiling = isceiling;
 	planeinfo[numplanes].fixedheight = fixedheight;
-	planeinfo[numplanes].lightlevel = (planecolormap && (planecolormap->flags & CMF_FOG)) ? lightlevel : 255;
-	planeinfo[numplanes].levelflat = levelflat;
+	planeinfo[numplanes].lightlevel = lightlevel;
+	planeinfo[numplanes].lumpnum = lumpnum;
 	planeinfo[numplanes].xsub = xsub;
 	planeinfo[numplanes].alpha = alpha;
 	planeinfo[numplanes].FOFSector = FOFSector;
@@ -4742,7 +5103,8 @@ void HWR_AddTransparentFloor(levelflat_t *levelflat, extrasubsector_t *xsub, boo
 
 // Adding this for now until I can create extrasubsector info for polyobjects
 // When that happens it'll just be done through HWR_AddTransparentFloor and HWR_RenderPlane
-void HWR_AddTransparentPolyobjectFloor(levelflat_t *levelflat, polyobj_t *polysector, boolean isceiling, fixed_t fixedheight, INT32 lightlevel, INT32 alpha, sector_t *FOFSector, FBITFIELD blend, extracolormap_t *planecolormap)
+void HWR_AddTransparentPolyobjectFloor(lumpnum_t lumpnum, polyobj_t *polysector, boolean isceiling,
+	fixed_t fixedheight, INT32 lightlevel, INT32 alpha, sector_t *FOFSector, FBITFIELD blend, extracolormap_t *planecolormap)
 {
 	static size_t allocedpolyplanes = 0;
 
@@ -4758,8 +5120,8 @@ void HWR_AddTransparentPolyobjectFloor(levelflat_t *levelflat, polyobj_t *polyse
 
 	polyplaneinfo[numpolyplanes].isceiling = isceiling;
 	polyplaneinfo[numpolyplanes].fixedheight = fixedheight;
-	polyplaneinfo[numpolyplanes].lightlevel = (planecolormap && (planecolormap->flags & CMF_FOG)) ? lightlevel : 255;
-	polyplaneinfo[numpolyplanes].levelflat = levelflat;
+	polyplaneinfo[numpolyplanes].lightlevel = lightlevel;
+	polyplaneinfo[numpolyplanes].lumpnum = lumpnum;
 	polyplaneinfo[numpolyplanes].polysector = polysector;
 	polyplaneinfo[numpolyplanes].alpha = alpha;
 	polyplaneinfo[numpolyplanes].FOFSector = FOFSector;
@@ -4769,68 +5131,28 @@ void HWR_AddTransparentPolyobjectFloor(levelflat_t *levelflat, polyobj_t *polyse
 	numpolyplanes++;
 }
 
-// putting sortindex and sortnode here so the comparator function can see them
-gl_drawnode_t *sortnode;
-size_t *sortindex;
-
-static int CompareDrawNodes(const void *p1, const void *p2)
-{
-	size_t n1 = *(const size_t*)p1;
-	size_t n2 = *(const size_t*)p2;
-	INT32 v1 = 0;
-	INT32 v2 = 0;
-	INT32 diff;
-	if (sortnode[n1].plane)
-		v1 = sortnode[n1].plane->drawcount;
-	else if (sortnode[n1].polyplane)
-		v1 = sortnode[n1].polyplane->drawcount;
-	else if (sortnode[n1].wall)
-		v1 = sortnode[n1].wall->drawcount;
-	else I_Error("CompareDrawNodes: n1 unknown");
-
-	if (sortnode[n2].plane)
-		v2 = sortnode[n2].plane->drawcount;
-	else if (sortnode[n2].polyplane)
-		v2 = sortnode[n2].polyplane->drawcount;
-	else if (sortnode[n2].wall)
-		v2 = sortnode[n2].wall->drawcount;
-	else I_Error("CompareDrawNodes: n2 unknown");
-
-	diff = v2 - v1;
-	if (diff == 0) I_Error("CompareDrawNodes: diff is zero");
-	return diff;
-}
-
-static int CompareDrawNodePlanes(const void *p1, const void *p2)
-{
-	size_t n1 = *(const size_t*)p1;
-	size_t n2 = *(const size_t*)p2;
-	if (!sortnode[n1].plane) I_Error("CompareDrawNodePlanes: Uh.. This isn't a plane! (n1)");
-	if (!sortnode[n2].plane) I_Error("CompareDrawNodePlanes: Uh.. This isn't a plane! (n2)");
-	return ABS(sortnode[n2].plane->fixedheight - viewz) - ABS(sortnode[n1].plane->fixedheight - viewz);
-}
-
 //
 // HWR_CreateDrawNodes
 // Creates and sorts a list of drawnodes for the scene being rendered.
 static void HWR_CreateDrawNodes(void)
 {
-	UINT32 i = 0, p = 0;
-	size_t run_start = 0;
+	UINT32 i = 0, p = 0, prev = 0, loop;
+	const fixed_t pviewz = dup_viewz;
 
 	// Dump EVERYTHING into a huge drawnode list. Then we'll sort it!
 	// Could this be optimized into _AddTransparentWall/_AddTransparentPlane?
 	// Hell yes! But sort algorithm must be modified to use a linked list.
-	sortnode = Z_Calloc((sizeof(planeinfo_t)*numplanes)
-					+ (sizeof(polyplaneinfo_t)*numpolyplanes)
-					+ (sizeof(wallinfo_t)*numwalls)
-					,PU_STATIC, NULL);
+	gr_drawnode_t *sortnode = Z_Calloc((sizeof(planeinfo_t)*numplanes)
+									+ (sizeof(polyplaneinfo_t)*numpolyplanes)
+									+ (sizeof(wallinfo_t)*numwalls)
+									,PU_STATIC, NULL);
 	// todo:
 	// However, in reality we shouldn't be re-copying and shifting all this information
 	// that is already lying around. This should all be in some sort of linked list or lists.
-	sortindex = Z_Calloc(sizeof(size_t) * (numplanes + numpolyplanes + numwalls), PU_STATIC, NULL);
+	size_t *sortindex = Z_Calloc(sizeof(size_t) * (numplanes + numpolyplanes + numwalls), PU_STATIC, NULL);
 
-	PS_START_TIMING(ps_hw_nodesorttime);
+	// If true, swap the draw order.
+	boolean shift = false;
 
 	for (i = 0; i < numplanes; i++, p++)
 	{
@@ -4850,69 +5172,130 @@ static void HWR_CreateDrawNodes(void)
 		sortindex[p] = p;
 	}
 
-	ps_numdrawnodes.value.i = p;
-
 	// p is the number of stuff to sort
 
-	// sort the list based on the value of the 'drawcount' member of the drawnodes.
-	qsort(sortindex, p, sizeof(size_t), CompareDrawNodes);
+	// Add the 3D floors, thicksides, and masked textures...
+	// Instead of going through drawsegs, we need to iterate
+	// through the lists of masked textures and
+	// translucent ffloors being drawn.
 
-	// an additional pass is needed to correct the order of consecutive planes in the list.
-	// for each consecutive run of planes in the list, sort that run based on plane height and view height.
-	while (run_start < p-1)// p-1 because a 1 plane run at the end of the list does not count
+	// This is a bubble sort! Wahoo!
+
+	// Stuff is sorted:
+	//      sortnode[sortindex[0]]   = farthest away
+	//      sortnode[sortindex[p-1]] = closest
+	// "i" should be closer. "prev" should be further.
+	// The lower drawcount is, the further it is from the screen.
+
+	for (loop = 0; loop < p; loop++)
 	{
-		// locate run start
-		if (sortnode[sortindex[run_start]].plane)
+		for (i = 1; i < p; i++)
 		{
-			// found it, now look for run end
-			size_t run_end;// (inclusive)
-			for (i = run_start+1; i < p; i++)// size_t and UINT32 being used mixed here... shouldnt break anything though..
+			prev = i-1;
+			if (sortnode[sortindex[i]].plane)
 			{
-				if (!sortnode[sortindex[i]].plane) break;
+				// What are we comparing it with?
+				if (sortnode[sortindex[prev]].plane)
+				{
+					// Plane (i) is further away than plane (prev)
+					if (ABS(sortnode[sortindex[i]].plane->fixedheight - pviewz) > ABS(sortnode[sortindex[prev]].plane->fixedheight - pviewz))
+						shift = true;
+				}
+				if (sortnode[sortindex[prev]].polyplane)
+				{
+					// Plane (i) is further away than polyplane (prev)
+					if (ABS(sortnode[sortindex[i]].plane->fixedheight - pviewz) > ABS(sortnode[sortindex[prev]].polyplane->fixedheight - pviewz))
+						shift = true;
+				}
+				else if (sortnode[sortindex[prev]].wall)
+				{
+					// Plane (i) is further than wall (prev)
+					if (sortnode[sortindex[i]].plane->drawcount > sortnode[sortindex[prev]].wall->drawcount)
+						shift = true;
+				}
 			}
-			run_end = i-1;
-			if (run_end > run_start)// if there are multiple consecutive planes, not just one
+			else if (sortnode[sortindex[i]].polyplane)
 			{
-				// consecutive run of planes found, now sort it
-				qsort(sortindex + run_start, run_end - run_start + 1, sizeof(size_t), CompareDrawNodePlanes);
+				// What are we comparing it with?
+				if (sortnode[sortindex[prev]].plane)
+				{
+					// Plane (i) is further away than plane (prev)
+					if (ABS(sortnode[sortindex[i]].polyplane->fixedheight - pviewz) > ABS(sortnode[sortindex[prev]].plane->fixedheight - pviewz))
+						shift = true;
+				}
+				if (sortnode[sortindex[prev]].polyplane)
+				{
+					// Plane (i) is further away than polyplane (prev)
+					if (ABS(sortnode[sortindex[i]].polyplane->fixedheight - pviewz) > ABS(sortnode[sortindex[prev]].polyplane->fixedheight - pviewz))
+						shift = true;
+				}
+				else if (sortnode[sortindex[prev]].wall)
+				{
+					// Plane (i) is further than wall (prev)
+					if (sortnode[sortindex[i]].polyplane->drawcount > sortnode[sortindex[prev]].wall->drawcount)
+						shift = true;
+				}
 			}
-			run_start = run_end + 1;// continue looking for runs coming right after this one
-		}
-		else
-		{
-			// this wasnt the run start, try next one
-			run_start++;
-		}
-	}
+			else if (sortnode[sortindex[i]].wall)
+			{
+				// What are we comparing it with?
+				if (sortnode[sortindex[prev]].plane)
+				{
+					// Wall (i) is further than plane(prev)
+					if (sortnode[sortindex[i]].wall->drawcount > sortnode[sortindex[prev]].plane->drawcount)
+						shift = true;
+				}
+				if (sortnode[sortindex[prev]].polyplane)
+				{
+					// Wall (i) is further than polyplane(prev)
+					if (sortnode[sortindex[i]].wall->drawcount > sortnode[sortindex[prev]].polyplane->drawcount)
+						shift = true;
+				}
+				else if (sortnode[sortindex[prev]].wall)
+				{
+					// Wall (i) is further than wall (prev)
+					if (sortnode[sortindex[i]].wall->drawcount > sortnode[sortindex[prev]].wall->drawcount)
+						shift = true;
+				}
+			}
 
-	PS_STOP_TIMING(ps_hw_nodesorttime);
+			if (shift)
+			{
+				size_t temp;
 
-	PS_START_TIMING(ps_hw_nodedrawtime);
+				temp = sortindex[prev];
+				sortindex[prev] = sortindex[i];
+				sortindex[i] = temp;
 
-	// Okay! Let's draw it all! Woo!
+				shift = false;
+			}
+
+		} //i++
+	} // loop++
+
 	HWD.pfnSetTransform(&atransform);
-
+	// Okay! Let's draw it all! Woo!
 	for (i = 0; i < p; i++)
 	{
 		if (sortnode[sortindex[i]].plane)
 		{
-			// We aren't traversing the BSP tree, so make gl_frontsector null to avoid crashes.
-			gl_frontsector = NULL;
+			// We aren't traversing the BSP tree, so make gr_frontsector null to avoid crashes.
+			gr_frontsector = NULL;
 
 			if (!(sortnode[sortindex[i]].plane->blend & PF_NoTexture))
-				HWR_GetLevelFlat(sortnode[sortindex[i]].plane->levelflat);
+				HWR_GetFlat(sortnode[sortindex[i]].plane->lumpnum);
 			HWR_RenderPlane(NULL, sortnode[sortindex[i]].plane->xsub, sortnode[sortindex[i]].plane->isceiling, sortnode[sortindex[i]].plane->fixedheight, sortnode[sortindex[i]].plane->blend, sortnode[sortindex[i]].plane->lightlevel,
-				sortnode[sortindex[i]].plane->levelflat, sortnode[sortindex[i]].plane->FOFSector, sortnode[sortindex[i]].plane->alpha, sortnode[sortindex[i]].plane->planecolormap);
+				sortnode[sortindex[i]].plane->lumpnum, sortnode[sortindex[i]].plane->FOFSector, sortnode[sortindex[i]].plane->alpha, sortnode[sortindex[i]].plane->fogplane, sortnode[sortindex[i]].plane->planecolormap);
 		}
 		else if (sortnode[sortindex[i]].polyplane)
 		{
-			// We aren't traversing the BSP tree, so make gl_frontsector null to avoid crashes.
-			gl_frontsector = NULL;
+			// We aren't traversing the BSP tree, so make gr_frontsector null to avoid crashes.
+			gr_frontsector = NULL;
 
 			if (!(sortnode[sortindex[i]].polyplane->blend & PF_NoTexture))
-				HWR_GetLevelFlat(sortnode[sortindex[i]].polyplane->levelflat);
+				HWR_GetFlat(sortnode[sortindex[i]].polyplane->lumpnum);
 			HWR_RenderPolyObjectPlane(sortnode[sortindex[i]].polyplane->polysector, sortnode[sortindex[i]].polyplane->isceiling, sortnode[sortindex[i]].polyplane->fixedheight, sortnode[sortindex[i]].polyplane->blend, sortnode[sortindex[i]].polyplane->lightlevel,
-				sortnode[sortindex[i]].polyplane->levelflat, sortnode[sortindex[i]].polyplane->FOFSector, sortnode[sortindex[i]].polyplane->alpha, sortnode[sortindex[i]].polyplane->planecolormap);
+				sortnode[sortindex[i]].polyplane->lumpnum, sortnode[sortindex[i]].polyplane->FOFSector, sortnode[sortindex[i]].polyplane->alpha, sortnode[sortindex[i]].polyplane->planecolormap);
 		}
 		else if (sortnode[sortindex[i]].wall)
 		{
@@ -4923,8 +5306,6 @@ static void HWR_CreateDrawNodes(void)
 		}
 	}
 
-	PS_STOP_TIMING(ps_hw_nodedrawtime);
-
 	numwalls = 0;
 	numplanes = 0;
 	numpolyplanes = 0;
@@ -4934,85 +5315,47 @@ static void HWR_CreateDrawNodes(void)
 	Z_Free(sortindex);
 }
 
+#endif
+
 // --------------------------------------------------------------------------
 //  Draw all vissprites
 // --------------------------------------------------------------------------
-
+#ifdef SORTING
 // added the stransform so they can be switched as drawing happenes so MD2s and sprites are sorted correctly with each other
 static void HWR_DrawSprites(void)
 {
-	UINT32 i;
-	boolean skipshadow = false; // skip shadow if it was drawn already for a linkdraw sprite encountered earlier in the list
-	HWD.pfnSetSpecialState(HWD_SET_MODEL_LIGHTING, cv_glmodellighting.value);
-	for (i = 0; i < gl_visspritecount; i++)
+	if (gr_visspritecount > 0)
 	{
-		gl_vissprite_t *spr = gl_vsprorder[i];
-#ifdef HWPRECIP
-		if (spr->precip)
-			HWR_DrawPrecipitationSprite(spr);
-		else
-#endif
+		gr_vissprite_t *spr;
+
+		// draw all vissprites back to front
+		for (spr = gr_vsprsortedhead.next;
+		     spr != &gr_vsprsortedhead;
+		     spr = spr->next)
 		{
-			if (spr->mobj && spr->mobj->shadowscale && cv_shadow.value && !skipshadow)
-			{
-				HWR_DrawDropShadow(spr->mobj, spr->mobj->shadowscale);
-			}
-
-			if ((spr->mobj->flags2 & MF2_LINKDRAW) && spr->mobj->tracer)
-			{
-				// If this linkdraw sprite is behind a sprite that has a shadow,
-				// then that shadow has to be drawn first, otherwise the shadow ends up on top of
-				// the linkdraw sprite because the linkdraw sprite does not modify the z-buffer.
-				// The !skipshadow check is there in case there are multiple linkdraw sprites connected
-				// to the same tracer, so the tracer's shadow only gets drawn once.
-				if (cv_shadow.value && !skipshadow && spr->dispoffset < 0 && spr->mobj->tracer->shadowscale)
-				{
-					HWR_DrawDropShadow(spr->mobj->tracer, spr->mobj->tracer->shadowscale);
-					skipshadow = true;
-					// The next sprite in this loop should be either another linkdraw sprite or the tracer.
-					// When the tracer is inevitably encountered, skipshadow will cause it's shadow
-					// to get skipped and skipshadow will get set to false by the 'else' clause below.
-				}
-			}
+#ifdef HWPRECIP
+			if (spr->precip)
+				HWR_DrawPrecipitationSprite(spr);
 			else
-			{
-				skipshadow = false;
-			}
-
-			if (spr->mobj && spr->mobj->skin && spr->mobj->sprite == SPR_PLAY)
-			{
-				if (!cv_glmodels.value || md2_playermodels[(skin_t*)spr->mobj->skin-skins].notfound || md2_playermodels[(skin_t*)spr->mobj->skin-skins].scale < 0.0f)
-					HWR_DrawSprite(spr);
+#endif
+				if (spr->mobj && spr->mobj->skin && spr->mobj->sprite == SPR_PLAY)
+				{
+					if (!cv_grmd2.value || md2_playermodels[(skin_t*)spr->mobj->skin-skins].notfound || md2_playermodels[(skin_t*)spr->mobj->skin-skins].scale < 0.0f)
+						HWR_DrawSprite(spr);
+					else
+						HWR_DrawMD2(spr);
+				}
 				else
 				{
-					if (!HWR_DrawModel(spr))
+					if (!cv_grmd2.value || md2_models[spr->mobj->sprite].notfound || md2_models[spr->mobj->sprite].scale < 0.0f)
 						HWR_DrawSprite(spr);
+					else
+						HWR_DrawMD2(spr);
 				}
-			}
-			else
-			{
-				if (!cv_glmodels.value || md2_models[spr->mobj->sprite].notfound || md2_models[spr->mobj->sprite].scale < 0.0f)
-					HWR_DrawSprite(spr);
-				else
-				{
-					if (!HWR_DrawModel(spr))
-						HWR_DrawSprite(spr);
-				}
-			}
 		}
 	}
-	HWD.pfnSetSpecialState(HWD_SET_MODEL_LIGHTING, 0);
-
-	// At the end of sprite drawing, draw shapes of linkdraw sprites to z-buffer, so they
-	// don't get drawn over by transparent surfaces.
-	HWR_LinkDrawHackFinish();
-	// Work around a r_opengl.c bug with PF_Invisible by making this SetBlend call
-	// where PF_Invisible is off and PF_Masked is on.
-	// (Other states probably don't matter. Here I left them same as in LinkDrawHackFinish)
-	// Without this workaround the rest of the draw calls in this frame (including UI, screen texture)
-	// can get drawn using an incorrect glBlendFunc, resulting in a occasional black screen.
-	HWD.pfnSetBlend(PF_Translucent|PF_Occlude|PF_Masked);
 }
+#endif
 
 // --------------------------------------------------------------------------
 // HWR_AddSprites
@@ -5025,7 +5368,7 @@ static void HWR_AddSprites(sector_t *sec)
 #ifdef HWPRECIP
 	precipmobj_t *precipthing;
 #endif
-	fixed_t limit_dist, hoop_limit_dist;
+	fixed_t approx_dist, limit_dist;
 
 	// BSP is traversed by subsector.
 	// A sector might have been split into several
@@ -5042,23 +5385,52 @@ static void HWR_AddSprites(sector_t *sec)
 
 	// Handle all things in sector.
 	// If a limit exists, handle things a tiny bit different.
-	limit_dist = (fixed_t)(cv_drawdist.value) << FRACBITS;
-	hoop_limit_dist = (fixed_t)(cv_drawdist_nights.value) << FRACBITS;
-	for (thing = sec->thinglist; thing; thing = thing->snext)
+	if ((limit_dist = (fixed_t)((maptol & TOL_NIGHTS) ? cv_drawdist_nights.value : cv_drawdist.value) << FRACBITS))
 	{
-		if (R_ThingVisibleWithinDist(thing, limit_dist, hoop_limit_dist))
+		for (thing = sec->thinglist; thing; thing = thing->snext)
+		{
+			if (thing->sprite == SPR_NULL || thing->flags2 & MF2_DONTDRAW)
+				continue;
+
+			approx_dist = P_AproxDistance(viewx-thing->x, viewy-thing->y);
+
+			if (approx_dist > limit_dist)
+				continue;
+
 			HWR_ProjectSprite(thing);
+		}
+	}
+	else
+	{
+		// Draw everything in sector, no checks
+		for (thing = sec->thinglist; thing; thing = thing->snext)
+			if (!(thing->sprite == SPR_NULL || thing->flags2 & MF2_DONTDRAW))
+				HWR_ProjectSprite(thing);
 	}
 
 #ifdef HWPRECIP
-	// no, no infinite draw distance for precipitation. this option at zero is supposed to turn it off
+	// Someone seriously wants infinite draw distance for precipitation?
 	if ((limit_dist = (fixed_t)cv_drawdist_precip.value << FRACBITS))
 	{
 		for (precipthing = sec->preciplist; precipthing; precipthing = precipthing->snext)
 		{
-			if (R_PrecipThingVisible(precipthing, limit_dist))
-				HWR_ProjectPrecipitationSprite(precipthing);
+			if (precipthing->precipflags & PCF_INVISIBLE)
+				continue;
+
+			approx_dist = P_AproxDistance(viewx-precipthing->x, viewy-precipthing->y);
+
+			if (approx_dist > limit_dist)
+				continue;
+
+			HWR_ProjectPrecipitationSprite(precipthing);
 		}
+	}
+	else
+	{
+		// Draw everything in sector, no checks
+		for (precipthing = sec->preciplist; precipthing; precipthing = precipthing->snext)
+			if (!(precipthing->precipflags & PCF_INVISIBLE))
+				HWR_ProjectPrecipitationSprite(precipthing);
 	}
 #endif
 }
@@ -5070,108 +5442,41 @@ static void HWR_AddSprites(sector_t *sec)
 // BP why not use xtoviexangle/viewangletox like in bsp ?....
 static void HWR_ProjectSprite(mobj_t *thing)
 {
-	gl_vissprite_t *vis;
+	gr_vissprite_t *vis;
 	float tr_x, tr_y;
 	float tz;
-	float tracertz = 0.0f;
 	float x1, x2;
+	float z1, z2;
 	float rightsin, rightcos;
-	float this_scale, this_xscale, this_yscale;
-	float spritexscale, spriteyscale;
-	float shadowheight = 1.0f, shadowscale = 1.0f;
+	float this_scale;
 	float gz, gzt;
 	spritedef_t *sprdef;
 	spriteframe_t *sprframe;
-#ifdef ROTSPRITE
-	spriteinfo_t *sprinfo;
-#endif
-	md2_t *md2;
 	size_t lumpoff;
 	unsigned rot;
-	UINT16 flip;
-	boolean vflip = (!(thing->eflags & MFE_VERTICALFLIP) != !R_ThingVerticallyFlipped(thing));
-	boolean mirrored = thing->mirrored;
-	boolean hflip = (!R_ThingHorizontallyFlipped(thing) != !mirrored);
-	INT32 dispoffset;
-
+	UINT8 flip;
 	angle_t ang;
 	INT32 heightsec, phs;
-	const boolean splat = R_ThingIsFloorSprite(thing);
-	const boolean papersprite = (R_ThingIsPaperSprite(thing) && !splat);
-	float z1, z2;
-
-	fixed_t spr_width, spr_height;
-	fixed_t spr_offset, spr_topoffset;
-#ifdef ROTSPRITE
-	patch_t *rotsprite = NULL;
-	INT32 rollangle = 0;
-#endif
-
-	// uncapped/interpolation
-	interpmobjstate_t interp = {0};
 
 	if (!thing)
 		return;
-
-	if (thing->spritexscale < 1 || thing->spriteyscale < 1)
-		return;
-
-	INT32 blendmode;
-	if (thing->frame & FF_BLENDMASK)
-		blendmode = ((thing->frame & FF_BLENDMASK) >> FF_BLENDSHIFT) + 1;
 	else
-		blendmode = thing->blendmode;
-
-	// Visibility check by the blend mode.
-	if (thing->frame & FF_TRANSMASK)
-	{
-		if (!R_BlendLevelVisible(blendmode, (thing->frame & FF_TRANSMASK)>>FF_TRANSSHIFT))
-			return;
-	}
-
-	dispoffset = thing->info->dispoffset;
-
-
-	if (R_UsingFrameInterpolation() && !paused)
-	{
-		R_InterpolateMobjState(thing, rendertimefrac, &interp);
-	}
-	else
-	{
-		R_InterpolateMobjState(thing, FRACUNIT, &interp);
-	}
-
-	this_scale = FIXED_TO_FLOAT(thing->scale);
-	spritexscale = FIXED_TO_FLOAT(thing->spritexscale);
-	spriteyscale = FIXED_TO_FLOAT(thing->spriteyscale);
+		this_scale = FIXED_TO_FLOAT(thing->scale);
 
 	// transform the origin point
-	tr_x = FIXED_TO_FLOAT(interp.x) - gl_viewx;
-	tr_y = FIXED_TO_FLOAT(interp.y) - gl_viewy;
+	tr_x = FIXED_TO_FLOAT(thing->x) - gr_viewx;
+	tr_y = FIXED_TO_FLOAT(thing->y) - gr_viewy;
 
 	// rotation around vertical axis
-	tz = (tr_x * gl_viewcos) + (tr_y * gl_viewsin);
+	tz = (tr_x * gr_viewcos) + (tr_y * gr_viewsin);
 
 	// thing is behind view plane?
-	if (tz < ZCLIP_PLANE && !(papersprite || splat))
-	{
-		if (cv_glmodels.value) //Yellow: Only MD2's dont disappear
-		{
-			if (thing->skin && thing->sprite == SPR_PLAY)
-				md2 = &md2_playermodels[( (skin_t *)thing->skin - skins )];
-			else
-				md2 = &md2_models[thing->sprite];
-
-			if (md2->notfound || md2->scale < 0.0f)
-				return;
-		}
-		else
-			return;
-	}
+	if (tz < ZCLIP_PLANE && (!cv_grmd2.value || md2_models[thing->sprite].notfound == true)) //Yellow: Only MD2's dont disappear
+		return;
 
 	// The above can stay as it works for cutting sprites that are too close
-	tr_x = FIXED_TO_FLOAT(interp.x);
-	tr_y = FIXED_TO_FLOAT(interp.y);
+	tr_x = FIXED_TO_FLOAT(thing->x);
+	tr_y = FIXED_TO_FLOAT(thing->y);
 
 	// decide which patch to use for sprite relative to player
 #ifdef RANGECHECK
@@ -5183,19 +5488,9 @@ static void HWR_ProjectSprite(mobj_t *thing)
 
 	//Fab : 02-08-98: 'skin' override spritedef currently used for skin
 	if (thing->skin && thing->sprite == SPR_PLAY)
-	{
-		sprdef = &((skin_t *)thing->skin)->sprites[thing->sprite2];
-#ifdef ROTSPRITE
-		sprinfo = &((skin_t *)thing->skin)->sprinfo[thing->sprite2];
-#endif
-	}
+		sprdef = &((skin_t *)thing->skin)->spritedef;
 	else
-	{
 		sprdef = &sprites[thing->sprite];
-#ifdef ROTSPRITE
-		sprinfo = &spriteinfo[thing->sprite];
-#endif
-	}
 
 	if (rot >= sprdef->numframes)
 	{
@@ -5204,9 +5499,6 @@ static void HWR_ProjectSprite(mobj_t *thing)
 		thing->sprite = states[S_UNKNOWN].sprite;
 		thing->frame = states[S_UNKNOWN].frame;
 		sprdef = &sprites[thing->sprite];
-#ifdef ROTSPRITE
-		sprinfo = &spriteinfo[thing->sprite];
-#endif
 		rot = thing->frame&FF_FRAMEMASK;
 		thing->state->sprite = thing->sprite;
 		thing->state->frame = thing->frame;
@@ -5219,164 +5511,58 @@ static void HWR_ProjectSprite(mobj_t *thing)
 		I_Error("sprframes NULL for sprite %d\n", thing->sprite);
 #endif
 
-	ang = R_PointToAngle (interp.x, interp.y) - interp.angle;
-	if (mirrored)
-		ang = InvAngle(ang);
-
-	if (sprframe->rotate == SRF_SINGLE)
+	if (sprframe->rotate)
+	{
+		// choose a different rotation based on player view
+		ang = R_PointToAngle(thing->x, thing->y); // uses viewx,viewy
+		rot = (ang-thing->angle+ANGLE_202h)>>29;
+		//Fab: lumpid is the index for spritewidth,spriteoffset... tables
+		lumpoff = sprframe->lumpid[rot];
+		flip = sprframe->flip & (1<<rot);
+	}
+	else
 	{
 		// use single rotation for all views
 		rot = 0;                        //Fab: for vis->patch below
 		lumpoff = sprframe->lumpid[0];     //Fab: see note above
 		flip = sprframe->flip; // Will only be 0x00 or 0xFF
-
-		if (papersprite && ang < ANGLE_180)
-			flip ^= 0xFFFF;
-	}
-	else
-	{
-		// choose a different rotation based on player view
-		if ((sprframe->rotate & SRF_RIGHT) && (ang < ANGLE_180)) // See from right
-			rot = 6; // F7 slot
-		else if ((sprframe->rotate & SRF_LEFT) && (ang >= ANGLE_180)) // See from left
-			rot = 2; // F3 slot
-		else if (sprframe->rotate & SRF_3DGE) // 16-angle mode
-		{
-			rot = (ang+ANGLE_180+ANGLE_11hh)>>28;
-			rot = ((rot & 1)<<3)|(rot>>1);
-		}
-		else // Normal behaviour
-			rot = (ang+ANGLE_202h)>>29;
-
-		//Fab: lumpid is the index for spritewidth,spriteoffset... tables
-		lumpoff = sprframe->lumpid[rot];
-		flip = sprframe->flip & (1<<rot);
-
-		if (papersprite && ang < ANGLE_180)
-			flip ^= (1<<rot);
 	}
 
 	if (thing->skin && ((skin_t *)thing->skin)->flags & SF_HIRES)
-		this_scale *= FIXED_TO_FLOAT(((skin_t *)thing->skin)->highresscale);
+		this_scale = this_scale * FIXED_TO_FLOAT(((skin_t *)thing->skin)->highresscale);
 
-	spr_width = spritecachedinfo[lumpoff].width;
-	spr_height = spritecachedinfo[lumpoff].height;
-	spr_offset = spritecachedinfo[lumpoff].offset;
-	spr_topoffset = spritecachedinfo[lumpoff].topoffset;
-
-#ifdef ROTSPRITE
-	if (thing->rollangle
-	&& !(splat && !(thing->renderflags & RF_NOSPLATROLLANGLE)))
-	{
-		rollangle = R_GetRollAngle(thing->rollangle);
-		rotsprite = Patch_GetRotatedSprite(sprframe, (thing->frame & FF_FRAMEMASK), rot, flip, false, sprinfo, rollangle);
-
-		if (rotsprite != NULL)
-		{
-			spr_width = rotsprite->width << FRACBITS;
-			spr_height = rotsprite->height << FRACBITS;
-			spr_offset = rotsprite->leftoffset << FRACBITS;
-			spr_topoffset = rotsprite->topoffset << FRACBITS;
-			spr_topoffset += FEETADJUST;
-
-			// flip -> rotate, not rotate -> flip
-			flip = 0;
-		}
-	}
-#endif
-
-	if (thing->renderflags & RF_ABSOLUTEOFFSETS)
-	{
-		spr_offset = thing->spritexoffset;
-		spr_topoffset = thing->spriteyoffset;
-	}
-	else
-	{
-		SINT8 flipoffset = 1;
-
-		if ((thing->renderflags & RF_FLIPOFFSETS) && flip)
-			flipoffset = -1;
-
-		spr_offset += thing->spritexoffset * flipoffset;
-		spr_topoffset += thing->spriteyoffset * flipoffset;
-	}
-
-	if (papersprite)
-	{
-		rightsin = FIXED_TO_FLOAT(FINESINE(interp.angle >> ANGLETOFINESHIFT));
-		rightcos = FIXED_TO_FLOAT(FINECOSINE(interp.angle >> ANGLETOFINESHIFT));
-	}
-	else
-	{
-		rightsin = FIXED_TO_FLOAT(FINESINE((viewangle + ANGLE_90)>>ANGLETOFINESHIFT));
-		rightcos = FIXED_TO_FLOAT(FINECOSINE((viewangle + ANGLE_90)>>ANGLETOFINESHIFT));
-	}
-
-	flip = !flip != !hflip;
-
-	if (thing->renderflags & RF_SHADOWEFFECTS)
-	{
-		mobj_t *caster = thing->target;
-
-		if (caster && !P_MobjWasRemoved(caster))
-		{
-			fixed_t groundz = R_GetShadowZ(thing, NULL);
-			fixed_t floordiff = abs(((thing->eflags & MFE_VERTICALFLIP) ? caster->height : 0) + caster->z - groundz);
-
-			shadowheight = FIXED_TO_FLOAT(floordiff);
-			shadowscale = FIXED_TO_FLOAT(FixedMul(FRACUNIT - floordiff/640, caster->scale));
-
-			if (splat)
-				spritexscale *= shadowscale;
-			spriteyscale *= shadowscale;
-		}
-	}
-
-	this_xscale = spritexscale * this_scale;
-	this_yscale = spriteyscale * this_scale;
-
+	rightsin = FIXED_TO_FLOAT(FINESINE((viewangle + ANGLE_90)>>ANGLETOFINESHIFT));
+	rightcos = FIXED_TO_FLOAT(FINECOSINE((viewangle + ANGLE_90)>>ANGLETOFINESHIFT));
 	if (flip)
 	{
-		x1 = (FIXED_TO_FLOAT(spr_width - spr_offset) * this_xscale);
-		x2 = (FIXED_TO_FLOAT(spr_offset) * this_xscale);
+		x1 = (FIXED_TO_FLOAT(spritecachedinfo[lumpoff].width - spritecachedinfo[lumpoff].offset) * this_scale);
+		x2 = (FIXED_TO_FLOAT(spritecachedinfo[lumpoff].offset) * this_scale);
 	}
 	else
 	{
-		x1 = (FIXED_TO_FLOAT(spr_offset) * this_xscale);
-		x2 = (FIXED_TO_FLOAT(spr_width - spr_offset) * this_xscale);
+		x1 = (FIXED_TO_FLOAT(spritecachedinfo[lumpoff].offset) * this_scale);
+		x2 = (FIXED_TO_FLOAT(spritecachedinfo[lumpoff].width - spritecachedinfo[lumpoff].offset) * this_scale);
 	}
-
-	// test if too close
-/*
-	if (papersprite)
-	{
-		z1 = tz - x1 * angle_scalez;
-		z2 = tz + x2 * angle_scalez;
-
-		if (max(z1, z2) < ZCLIP_PLANE)
-			return;
-	}
-*/
 
 	z1 = tr_y + x1 * rightsin;
 	z2 = tr_y - x2 * rightsin;
 	x1 = tr_x + x1 * rightcos;
 	x2 = tr_x - x2 * rightcos;
 
-	if (vflip)
+	if (thing->eflags & MFE_VERTICALFLIP)
 	{
-		gz = FIXED_TO_FLOAT(interp.z + thing->height) - (FIXED_TO_FLOAT(spr_topoffset) * this_yscale);
-		gzt = gz + (FIXED_TO_FLOAT(spr_height) * this_yscale);
+		gz = FIXED_TO_FLOAT(thing->z+thing->height) - FIXED_TO_FLOAT(spritecachedinfo[lumpoff].topoffset) * this_scale;
+		gzt = gz + FIXED_TO_FLOAT(spritecachedinfo[lumpoff].height) * this_scale;
 	}
 	else
 	{
-		gzt = FIXED_TO_FLOAT(interp.z) + (FIXED_TO_FLOAT(spr_topoffset) * this_yscale);
-		gz = gzt - (FIXED_TO_FLOAT(spr_height) * this_yscale);
+		gzt = FIXED_TO_FLOAT(thing->z) + FIXED_TO_FLOAT(spritecachedinfo[lumpoff].topoffset) * this_scale;
+		gz = gzt - FIXED_TO_FLOAT(spritecachedinfo[lumpoff].height) * this_scale;
 	}
 
 	if (thing->subsector->sector->cullheight)
 	{
-		if (HWR_DoCulling(thing->subsector->sector->cullheight, viewsector->cullheight, gl_viewz, gz, gzt))
+		if (HWR_DoCulling(thing->subsector->sector->cullheight, viewsector->cullheight, gr_viewz, gz, gzt))
 			return;
 	}
 
@@ -5388,51 +5574,14 @@ static void HWR_ProjectSprite(mobj_t *thing)
 
 	if (heightsec != -1 && phs != -1) // only clip things which are in special sectors
 	{
-		if (gl_viewz < FIXED_TO_FLOAT(sectors[phs].floorheight) ?
-		FIXED_TO_FLOAT(interp.z) >= FIXED_TO_FLOAT(sectors[heightsec].floorheight) :
+		if (gr_viewz < FIXED_TO_FLOAT(sectors[phs].floorheight) ?
+		FIXED_TO_FLOAT(thing->z) >= FIXED_TO_FLOAT(sectors[heightsec].floorheight) :
 		gzt < FIXED_TO_FLOAT(sectors[heightsec].floorheight))
 			return;
-		if (gl_viewz > FIXED_TO_FLOAT(sectors[phs].ceilingheight) ?
-		gzt < FIXED_TO_FLOAT(sectors[heightsec].ceilingheight) && gl_viewz >= FIXED_TO_FLOAT(sectors[heightsec].ceilingheight) :
-		FIXED_TO_FLOAT(interp.z) >= FIXED_TO_FLOAT(sectors[heightsec].ceilingheight))
+		if (gr_viewz > FIXED_TO_FLOAT(sectors[phs].ceilingheight) ?
+		gzt < FIXED_TO_FLOAT(sectors[heightsec].ceilingheight) && gr_viewz >= FIXED_TO_FLOAT(sectors[heightsec].ceilingheight) :
+		FIXED_TO_FLOAT(thing->z) >= FIXED_TO_FLOAT(sectors[heightsec].ceilingheight))
 			return;
-	}
-
-	if ((thing->flags2 & MF2_LINKDRAW) && thing->tracer)
-	{
-		interpmobjstate_t tracer_interp = {};
-
-		if (! R_ThingVisible(thing->tracer))
-			return;
-
-		if (R_UsingFrameInterpolation() && !paused)
-		{
-			R_InterpolateMobjState(thing->tracer, rendertimefrac, &tracer_interp);
-		}
-		else
-		{
-			R_InterpolateMobjState(thing->tracer, FRACUNIT, &tracer_interp);
-		}
-
-		// calculate tz for tracer, same way it is calculated for this sprite
-		// transform the origin point
-		tr_x = FIXED_TO_FLOAT(tracer_interp.x) - gl_viewx;
-		tr_y = FIXED_TO_FLOAT(tracer_interp.y) - gl_viewy;
-
-		// rotation around vertical axis
-		tracertz = (tr_x * gl_viewcos) + (tr_y * gl_viewsin);
-
-		// Software does not render the linkdraw sprite if the tracer is behind the view plane,
-		// so do the same check here.
-		// NOTE: This check has the same flaw as the view plane check at the beginning of HWR_ProjectSprite:
-		// the view aiming angle is not taken into account, leading to sprites disappearing too early when they
-		// can still be seen when looking down/up at steep angles.
-		if (tracertz < ZCLIP_PLANE)
-			return;
-
-		// if the sprite is behind the tracer, invert dispoffset, putting the sprite behind the tracer
-		if (tz > tracertz)
-			dispoffset *= -1;
 	}
 
 	// store information in a vissprite
@@ -5441,63 +5590,26 @@ static void HWR_ProjectSprite(mobj_t *thing)
 	vis->x2 = x2;
 	vis->z1 = z1;
 	vis->z2 = z2;
-
 	vis->tz = tz; // Keep tz for the simple sprite sorting that happens
-	vis->tracertz = tracertz;
-
-	vis->renderflags = thing->renderflags;
-	vis->rotateflags = sprframe->rotate;
-
-	vis->shadowheight = shadowheight;
-	vis->shadowscale = shadowscale;
-	vis->dispoffset = dispoffset; // Monster Iestyn: 23/11/15: HARDWARE SUPPORT AT LAST
+	vis->dispoffset = thing->info->dispoffset; // Monster Iestyn: 23/11/15: HARDWARE SUPPORT AT LAST
+	vis->patchlumpnum = sprframe->lumppat[rot];
 	vis->flip = flip;
-
-	vis->scale = this_scale;
-	vis->spritexscale = spritexscale;
-	vis->spriteyscale = spriteyscale;
-	vis->spritexoffset = FIXED_TO_FLOAT(spr_offset);
-	vis->spriteyoffset = FIXED_TO_FLOAT(spr_topoffset);
-
-	vis->rotated = false;
-
-#ifdef ROTSPRITE
-	if (rotsprite)
-	{
-		vis->gpatch = (patch_t *)rotsprite;
-		vis->rotated = true;
-	}
-	else
-#endif
-		vis->gpatch = (patch_t *)W_CachePatchNum(sprframe->lumppat[rot], PU_SPRITE);
-
 	vis->mobj = thing;
 
 	//Hurdler: 25/04/2000: now support colormap in hardware mode
-	if ((vis->mobj->flags & (MF_ENEMY|MF_BOSS)) && (vis->mobj->flags2 & MF2_FRET) && !(vis->mobj->flags & MF_GRENADEBOUNCE) && (leveltime & 1)) // Bosses "flash"
+	if ((vis->mobj->flags & MF_BOSS) && (vis->mobj->flags2 & MF2_FRET) && (leveltime & 1)) // Bosses "flash"
 	{
-		if (vis->mobj->type == MT_CYBRAKDEMON || vis->mobj->colorized)
+		if (vis->mobj->type == MT_CYBRAKDEMON)
 			vis->colormap = R_GetTranslationColormap(TC_ALLWHITE, 0, GTC_CACHE);
 		else if (vis->mobj->type == MT_METALSONIC_BATTLE)
 			vis->colormap = R_GetTranslationColormap(TC_METALSONIC, 0, GTC_CACHE);
 		else
-			vis->colormap = R_GetTranslationColormap(TC_BOSS, vis->mobj->color, GTC_CACHE);
+			vis->colormap = R_GetTranslationColormap(TC_BOSS, 0, GTC_CACHE);
 	}
 	else if (thing->color)
 	{
 		// New colormap stuff for skins Tails 06-07-2002
-		if (thing->colorized)
-			vis->colormap = R_GetTranslationColormap(TC_RAINBOW, thing->color, GTC_CACHE);
-		else if (thing->player && thing->player->dashmode >= DASHMODE_THRESHOLD
-			&& (thing->player->charflags & SF_DASHMODE)
-			&& ((leveltime/2) & 1))
-		{
-			if (thing->player->charflags & SF_MACHINE)
-				vis->colormap = R_GetTranslationColormap(TC_DASHMODE, 0, GTC_CACHE);
-			else
-				vis->colormap = R_GetTranslationColormap(TC_RAINBOW, thing->color, GTC_CACHE);
-		}
-		else if (thing->skin && thing->sprite == SPR_PLAY) // This thing is a player!
+		if (thing->skin && thing->sprite == SPR_PLAY) // This thing is a player!
 		{
 			size_t skinnum = (skin_t*)thing->skin-skins;
 			vis->colormap = R_GetTranslationColormap((INT32)skinnum, thing->color, GTC_CACHE);
@@ -5506,16 +5618,18 @@ static void HWR_ProjectSprite(mobj_t *thing)
 			vis->colormap = R_GetTranslationColormap(TC_DEFAULT, vis->mobj->color ? vis->mobj->color : SKINCOLOR_CYAN, GTC_CACHE);
 	}
 	else
-		vis->colormap = NULL;
+		vis->colormap = colormaps;
 
 	// set top/bottom coords
-	vis->gzt = gzt;
-	vis->gz = gz;
+	vis->ty = gzt;
 
 	//CONS_Debug(DBG_RENDER, "------------------\nH: sprite  : %d\nH: frame   : %x\nH: type    : %d\nH: sname   : %s\n\n",
 	//            thing->sprite, thing->frame, thing->type, sprnames[thing->sprite]);
 
-	vis->vflip = vflip;
+	if (thing->eflags & MFE_VERTICALFLIP)
+		vis->vflip = true;
+	else
+		vis->vflip = false;
 
 	vis->precip = false;
 }
@@ -5524,7 +5638,7 @@ static void HWR_ProjectSprite(mobj_t *thing)
 // Precipitation projector for hardware mode
 static void HWR_ProjectPrecipitationSprite(precipmobj_t *thing)
 {
-	gl_vissprite_t *vis;
+	gr_vissprite_t *vis;
 	float tr_x, tr_y;
 	float tz;
 	float x1, x2;
@@ -5536,42 +5650,19 @@ static void HWR_ProjectPrecipitationSprite(precipmobj_t *thing)
 	unsigned rot = 0;
 	UINT8 flip;
 
-	if (!thing)
-		return;
-
-	// Visibility check by the blend mode.
-	if (thing->frame & FF_TRANSMASK)
-	{
-		if (!R_BlendLevelVisible(thing->blendmode, (thing->frame & FF_TRANSMASK)>>FF_TRANSSHIFT))
-			return;
-	}
-
-	// uncapped/interpolation
-	interpmobjstate_t interp = {0};
-
-	// do interpolation
-	if (R_UsingFrameInterpolation() && !paused)
-	{
-		R_InterpolatePrecipMobjState(thing, rendertimefrac, &interp);
-	}
-	else
-	{
-		R_InterpolatePrecipMobjState(thing, FRACUNIT, &interp);
-	}
-
 	// transform the origin point
-	tr_x = FIXED_TO_FLOAT(interp.x) - gl_viewx;
-	tr_y = FIXED_TO_FLOAT(interp.y) - gl_viewy;
+	tr_x = FIXED_TO_FLOAT(thing->x) - gr_viewx;
+	tr_y = FIXED_TO_FLOAT(thing->y) - gr_viewy;
 
 	// rotation around vertical axis
-	tz = (tr_x * gl_viewcos) + (tr_y * gl_viewsin);
+	tz = (tr_x * gr_viewcos) + (tr_y * gr_viewsin);
 
 	// thing is behind view plane?
 	if (tz < ZCLIP_PLANE)
 		return;
 
-	tr_x = FIXED_TO_FLOAT(interp.x);
-	tr_y = FIXED_TO_FLOAT(interp.y);
+	tr_x = FIXED_TO_FLOAT(thing->x);
+	tr_y = FIXED_TO_FLOAT(thing->y);
 
 	// decide which patch to use for sprite relative to player
 	if ((unsigned)thing->sprite >= numsprites)
@@ -5592,7 +5683,7 @@ static void HWR_ProjectPrecipitationSprite(precipmobj_t *thing)
 		return;
 #endif
 
-	sprframe = &sprdef->spriteframes[thing->frame & FF_FRAMEMASK];
+	sprframe = &sprdef->spriteframes[ thing->frame & FF_FRAMEMASK];
 
 	// use single rotation for all views
 	lumpoff = sprframe->lumpid[0];
@@ -5616,6 +5707,16 @@ static void HWR_ProjectPrecipitationSprite(precipmobj_t *thing)
 	x1 = tr_x + x1 * rightcos;
 	x2 = tr_x - x2 * rightcos;
 
+	// okay, we can't return now... this is a hack, but weather isn't networked, so it should be ok
+	if (!(thing->precipflags & PCF_THUNK))
+	{
+		if (thing->precipflags & PCF_RAIN)
+			P_RainThinker(thing);
+		else
+			P_SnowThinker(thing);
+		thing->precipflags |= PCF_THUNK;
+	}
+
 	//
 	// store information in a vissprite
 	//
@@ -5626,311 +5727,100 @@ static void HWR_ProjectPrecipitationSprite(precipmobj_t *thing)
 	vis->z2 = z2;
 	vis->tz = tz;
 	vis->dispoffset = 0; // Monster Iestyn: 23/11/15: HARDWARE SUPPORT AT LAST
-	vis->gpatch = (patch_t *)W_CachePatchNum(sprframe->lumppat[rot], PU_SPRITE);
+	vis->patchlumpnum = sprframe->lumppat[rot];
 	vis->flip = flip;
 	vis->mobj = (mobj_t *)thing;
 
-	vis->colormap = NULL;
+	vis->colormap = colormaps;
 
 	// set top/bottom coords
-	vis->gzt = FIXED_TO_FLOAT(interp.z + spritecachedinfo[lumpoff].topoffset);
-	vis->gz = vis->gzt - FIXED_TO_FLOAT(spritecachedinfo[lumpoff].height);
+	vis->ty = FIXED_TO_FLOAT(thing->z + spritecachedinfo[lumpoff].topoffset);
 
 	vis->precip = true;
-
-	// okay... this is a hack, but weather isn't networked, so it should be ok
-	if (!(thing->precipflags & PCF_THUNK))
-	{
-		if (thing->precipflags & PCF_RAIN)
-			P_RainThinker(thing);
-		else
-			P_SnowThinker(thing);
-		thing->precipflags |= PCF_THUNK;
-	}
 }
 #endif
 
 // ==========================================================================
-// Sky dome rendering, ported from PrBoom+
+//
 // ==========================================================================
-
-static gl_sky_t gl_sky;
-
-static void HWR_SkyDomeVertex(gl_sky_t *sky, gl_skyvertex_t *vbo, int r, int c, signed char yflip, float delta, boolean foglayer)
+static void HWR_DrawSkyBackground(void)
 {
-	const float radians = (float)(M_PIl / 180.0f);
-	const float scale = 10000.0f;
-	const float maxSideAngle = 60.0f;
+	FOutVector v[4];
+	angle_t angle;
+	float dimensionmultiply;
+	float aspectratio;
+	float angleturn;
 
-	float topAngle = (c / (float)sky->columns * 360.0f);
-	float sideAngle = (maxSideAngle * (sky->rows - r) / sky->rows);
-	float height = (float)(sin(sideAngle * radians));
-	float realRadius = (float)(scale * cos(sideAngle * radians));
-	float x = (float)(realRadius * cos(topAngle * radians));
-	float y = (!yflip) ? scale * height : -scale * height;
-	float z = (float)(realRadius * sin(topAngle * radians));
-	float timesRepeat = (4 * (256.0f / sky->width));
-	if (fpclassify(timesRepeat) == FP_ZERO)
-		timesRepeat = 1.0f;
+	HWR_GetTexture(skytexture);
+	aspectratio = (float)vid.width/(float)vid.height;
 
-	if (!foglayer)
+	//Hurdler: the sky is the only texture who need 4.0f instead of 1.0
+	//         because it's called just after clearing the screen
+	//         and thus, the near clipping plane is set to 3.99
+	// Sryder: Just use the near clipping plane value then
+
+	//  3--2
+	//  | /|
+	//  |/ |
+	//  0--1
+	v[0].x = v[3].x = -ZCLIP_PLANE-1;
+	v[1].x = v[2].x =  ZCLIP_PLANE+1;
+	v[0].y = v[1].y = -ZCLIP_PLANE-1;
+	v[2].y = v[3].y =  ZCLIP_PLANE+1;
+
+	v[0].z = v[1].z = v[2].z = v[3].z = ZCLIP_PLANE+1;
+
+	// X
+
+	// NOTE: This doesn't work right with texture widths greater than 1024
+	// software doesn't draw any further than 1024 for skies anyway, but this doesn't overlap properly
+	// The only time this will probably be an issue is when a sky wider than 1024 is used as a sky AND a regular wall texture
+
+	angle = (dup_viewangle + gr_xtoviewangle[0]);
+	dimensionmultiply = ((float)textures[skytexture]->width/256.0f);
+
+	v[0].sow = v[3].sow = ((float) angle / ((ANGLE_90-1)*dimensionmultiply));
+	v[2].sow = v[1].sow = (-1.0f/dimensionmultiply)+((float) angle / ((ANGLE_90-1)*dimensionmultiply));
+
+	// Y
+	angle = aimingangle;
+	dimensionmultiply = ((float)textures[skytexture]->height/(128.0f*aspectratio));
+
+	if (splitscreen)
 	{
-		vbo->r = 255;
-		vbo->g = 255;
-		vbo->b = 255;
-		vbo->a = (r == 0 ? 0 : 255);
-
-		// And the texture coordinates.
-		vbo->u = (-timesRepeat * c / (float)sky->columns);
-		if (!yflip)	// Flipped Y is for the lower hemisphere.
-			vbo->v = (r / (float)sky->rows) + 0.5f;
-		else
-			vbo->v = 1.0f + ((sky->rows - r) / (float)sky->rows) + 0.5f;
+		dimensionmultiply *= 2;
+		angle *= 2;
 	}
 
-	if (r != 4)
-		y += 300.0f;
-
-	// And finally the vertex.
-	vbo->x = x;
-	vbo->y = y + delta;
-	vbo->z = z;
-}
-
-// Clears the sky dome.
-void HWR_ClearSkyDome(void)
-{
-	gl_sky_t *sky = &gl_sky;
-
-	if (sky->loops)
-		free(sky->loops);
-	if (sky->data)
-		free(sky->data);
-
-	sky->loops = NULL;
-	sky->data = NULL;
-
-	sky->vbo = 0;
-	sky->rows = sky->columns = 0;
-	sky->loopcount = 0;
-
-	sky->detail = 0;
-	sky->texture = -1;
-	sky->width = sky->height = 0;
-
-	sky->rebuild = true;
-}
-
-void HWR_BuildSkyDome(void)
-{
-	int c, r;
-	signed char yflip;
-	int row_count = 4;
-	int col_count = 4;
-	float delta;
-
-	gl_sky_t *sky = &gl_sky;
-	gl_skyvertex_t *vertex_p;
-	texture_t *texture = textures[texturetranslation[skytexture]];
-
-	sky->detail = 16;
-	col_count *= sky->detail;
-
-	if ((sky->columns != col_count) || (sky->rows != row_count))
-		HWR_ClearSkyDome();
-
-	sky->columns = col_count;
-	sky->rows = row_count;
-	sky->vertex_count = 2 * sky->rows * (sky->columns * 2 + 2) + sky->columns * 2;
-
-	if (!sky->loops)
-		sky->loops = malloc((sky->rows * 2 + 2) * sizeof(sky->loops[0]));
-
-	// create vertex array
-	if (!sky->data)
-		sky->data = malloc(sky->vertex_count * sizeof(sky->data[0]));
-
-	sky->texture = texturetranslation[skytexture];
-	sky->width = texture->width;
-	sky->height = texture->height;
-
-	vertex_p = &sky->data[0];
-	sky->loopcount = 0;
-
-	for (yflip = 0; yflip < 2; yflip++)
+	// Middle of the sky should always be at angle 0
+	// need to keep correct aspect ratio with X
+	if (atransform.flip)
 	{
-		sky->loops[sky->loopcount].mode = HWD_SKYLOOP_FAN;
-		sky->loops[sky->loopcount].vertexindex = vertex_p - &sky->data[0];
-		sky->loops[sky->loopcount].vertexcount = col_count;
-		sky->loops[sky->loopcount].use_texture = false;
-		sky->loopcount++;
-
-		delta = 0.0f;
-
-		for (c = 0; c < col_count; c++)
-		{
-			HWR_SkyDomeVertex(sky, vertex_p, 1, c, yflip, 0.0f, true);
-			vertex_p->r = 255;
-			vertex_p->g = 255;
-			vertex_p->b = 255;
-			vertex_p->a = 255;
-			vertex_p++;
-		}
-
-		delta = (yflip ? 5.0f : -5.0f) / 128.0f;
-
-		for (r = 0; r < row_count; r++)
-		{
-			sky->loops[sky->loopcount].mode = HWD_SKYLOOP_STRIP;
-			sky->loops[sky->loopcount].vertexindex = vertex_p - &sky->data[0];
-			sky->loops[sky->loopcount].vertexcount = 2 * col_count + 2;
-			sky->loops[sky->loopcount].use_texture = true;
-			sky->loopcount++;
-
-			for (c = 0; c <= col_count; c++)
-			{
-				HWR_SkyDomeVertex(sky, vertex_p++, r + (yflip ? 1 : 0), (c ? c : 0), yflip, delta, false);
-				HWR_SkyDomeVertex(sky, vertex_p++, r + (yflip ? 0 : 1), (c ? c : 0), yflip, delta, false);
-			}
-		}
-	}
-}
-
-static void HWR_DrawSkyBackground(player_t *player)
-{
-	HWD.pfnSetBlend(PF_Translucent|PF_NoDepthTest|PF_Modulated);
-
-	if (cv_glskydome.value)
-	{
-		FTransform dometransform;
-		const float fpov = FIXED_TO_FLOAT(cv_fov.value+player->fovadd);
-		postimg_t *type;
-
-		if (splitscreen && player == &players[secondarydisplayplayer])
-			type = &postimgtype2;
-		else
-			type = &postimgtype;
-
-		memset(&dometransform, 0x00, sizeof(FTransform));
-
-		//04/01/2000: Hurdler: added for T&L
-		//                     It should replace all other gl_viewxxx when finished
-		HWR_SetTransformAiming(&dometransform, player, false);
-		dometransform.angley = (float)((viewangle-ANGLE_270)>>ANGLETOFINESHIFT)*(360.0f/(float)FINEANGLES);
-
-		if (*type == postimg_flip)
-			dometransform.flip = true;
-		else
-			dometransform.flip = false;
-
-		dometransform.scalex = 1;
-		dometransform.scaley = (float)vid.width/vid.height;
-		dometransform.scalez = 1;
-		dometransform.fovxangle = fpov; // Tails
-		dometransform.fovyangle = fpov; // Tails
-		if (player->viewrollangle != 0)
-		{
-			fixed_t rol = AngleFixed(player->viewrollangle);
-			dometransform.rollangle = FIXED_TO_FLOAT(rol);
-			dometransform.roll = true;
-		}
-		dometransform.splitscreen = splitscreen;
-
-		HWR_GetTexture(texturetranslation[skytexture]);
-
-		if (gl_sky.texture != texturetranslation[skytexture])
-		{
-			HWR_ClearSkyDome();
-			HWR_BuildSkyDome();
-		}
-
-		if (HWR_UseShader())
-			HWD.pfnSetShader(HWR_GetShaderFromTarget(SHADER_SKY));
-		HWD.pfnSetTransform(&dometransform);
-		HWD.pfnRenderSkyDome(&gl_sky);
+		// During vertical flip the sky should be flipped and it's y movement should also be flipped obviously
+		v[3].tow = v[2].tow = -(0.5f-(0.5f/dimensionmultiply));
+		v[0].tow = v[1].tow = (-1.0f/dimensionmultiply)-(0.5f-(0.5f/dimensionmultiply));
 	}
 	else
 	{
-		FOutVector v[4];
-		angle_t angle;
-		float dimensionmultiply;
-		float aspectratio;
-		float angleturn;
-
-		HWR_GetTexture(texturetranslation[skytexture]);
-		aspectratio = (float)vid.width/(float)vid.height;
-
-		//Hurdler: the sky is the only texture who need 4.0f instead of 1.0
-		//         because it's called just after clearing the screen
-		//         and thus, the near clipping plane is set to 3.99
-		// Sryder: Just use the near clipping plane value then
-
-		//  3--2
-		//  | /|
-		//  |/ |
-		//  0--1
-		v[0].x = v[3].x = -ZCLIP_PLANE-1;
-		v[1].x = v[2].x =  ZCLIP_PLANE+1;
-		v[0].y = v[1].y = -ZCLIP_PLANE-1;
-		v[2].y = v[3].y =  ZCLIP_PLANE+1;
-
-		v[0].z = v[1].z = v[2].z = v[3].z = ZCLIP_PLANE+1;
-
-		// X
-
-		// NOTE: This doesn't work right with texture widths greater than 1024
-		// software doesn't draw any further than 1024 for skies anyway, but this doesn't overlap properly
-		// The only time this will probably be an issue is when a sky wider than 1024 is used as a sky AND a regular wall texture
-
-		angle = (dup_viewangle + gl_xtoviewangle[0]);
-
-		dimensionmultiply = ((float)textures[texturetranslation[skytexture]]->width/256.0f);
-
-		v[0].s = v[3].s = (-1.0f * angle) / (((float)ANGLE_90-1.0f)*dimensionmultiply); // left
-		v[2].s = v[1].s = v[0].s + (1.0f/dimensionmultiply); // right (or left + 1.0f)
-		// use +angle and -1.0f above instead if you wanted old backwards behavior
-
-		// Y
-		angle = aimingangle;
-		dimensionmultiply = ((float)textures[texturetranslation[skytexture]]->height/(128.0f*aspectratio));
-
-		if (splitscreen)
-		{
-			dimensionmultiply *= 2;
-			angle *= 2;
-		}
-
-		// Middle of the sky should always be at angle 0
-		// need to keep correct aspect ratio with X
-		if (atransform.flip)
-		{
-			// During vertical flip the sky should be flipped and it's y movement should also be flipped obviously
-			v[3].t = v[2].t = -(0.5f-(0.5f/dimensionmultiply)); // top
-			v[0].t = v[1].t = v[3].t - (1.0f/dimensionmultiply); // bottom (or top - 1.0f)
-		}
-		else
-		{
-			v[0].t = v[1].t = -(0.5f-(0.5f/dimensionmultiply)); // bottom
-			v[3].t = v[2].t = v[0].t - (1.0f/dimensionmultiply); // top (or bottom - 1.0f)
-		}
-
-		angleturn = (((float)ANGLE_45-1.0f)*aspectratio)*dimensionmultiply;
-
-		if (angle > ANGLE_180) // Do this because we don't want the sky to suddenly teleport when crossing over 0 to 360 and vice versa
-		{
-			angle = InvAngle(angle);
-			v[3].t = v[2].t += ((float) angle / angleturn);
-			v[0].t = v[1].t += ((float) angle / angleturn);
-		}
-		else
-		{
-			v[3].t = v[2].t -= ((float) angle / angleturn);
-			v[0].t = v[1].t -= ((float) angle / angleturn);
-		}
-
-		HWD.pfnUnSetShader();
-		HWD.pfnDrawPolygon(NULL, v, 4, 0);
+		v[3].tow = v[2].tow = (-1.0f/dimensionmultiply)-(0.5f-(0.5f/dimensionmultiply));
+		v[0].tow = v[1].tow = -(0.5f-(0.5f/dimensionmultiply));
 	}
+
+	angleturn = (((float)ANGLE_45-1.0f)*aspectratio)*dimensionmultiply;
+
+	if (angle > ANGLE_180) // Do this because we don't want the sky to suddenly teleport when crossing over 0 to 360 and vice versa
+	{
+		angle = InvAngle(angle);
+		v[3].tow = v[2].tow += ((float) angle / angleturn);
+		v[0].tow = v[1].tow += ((float) angle / angleturn);
+	}
+	else
+	{
+		v[3].tow = v[2].tow -= ((float) angle / angleturn);
+		v[0].tow = v[1].tow -= ((float) angle / angleturn);
+	}
+
+	HWD.pfnDrawPolygon(NULL, v, 4, 0);
 }
 
 
@@ -5946,10 +5836,10 @@ static inline void HWR_ClearView(void)
 
 	/// \bug faB - enable depth mask, disable color mask
 
-	HWD.pfnGClipRect((INT32)gl_viewwindowx,
-	                 (INT32)gl_viewwindowy,
-	                 (INT32)(gl_viewwindowx + gl_viewwidth),
-	                 (INT32)(gl_viewwindowy + gl_viewheight),
+	HWD.pfnGClipRect((INT32)gr_viewwindowx,
+	                 (INT32)gr_viewwindowy,
+	                 (INT32)(gr_viewwindowx + gr_viewwidth),
+	                 (INT32)(gr_viewwindowy + gr_viewheight),
 	                 ZCLIP_PLANE);
 	HWD.pfnClearBuffer(false, true, 0);
 
@@ -5965,62 +5855,32 @@ static inline void HWR_ClearView(void)
 void HWR_SetViewSize(void)
 {
 	// setup view size
-	gl_viewwidth = (float)vid.width;
-	gl_viewheight = (float)vid.height;
+	gr_viewwidth = (float)vid.width;
+	gr_viewheight = (float)vid.height;
 
 	if (splitscreen)
-		gl_viewheight /= 2;
+		gr_viewheight /= 2;
 
-	gl_centerx = gl_viewwidth / 2;
-	gl_basecentery = gl_viewheight / 2; //note: this is (gl_centerx * gl_viewheight / gl_viewwidth)
+	gr_centerx = gr_viewwidth / 2;
+	gr_basecentery = gr_viewheight / 2; //note: this is (gr_centerx * gr_viewheight / gr_viewwidth)
 
-	gl_viewwindowx = (vid.width - gl_viewwidth) / 2;
-	gl_windowcenterx = (float)(vid.width / 2);
-	if (fabsf(gl_viewwidth - vid.width) < 1.0E-36f)
+	gr_viewwindowx = (vid.width - gr_viewwidth) / 2;
+	gr_windowcenterx = (float)(vid.width / 2);
+	if (fabsf(gr_viewwidth - vid.width) < 1.0E-36f)
 	{
-		gl_baseviewwindowy = 0;
-		gl_basewindowcentery = gl_viewheight / 2;               // window top left corner at 0,0
+		gr_baseviewwindowy = 0;
+		gr_basewindowcentery = gr_viewheight / 2;               // window top left corner at 0,0
 	}
 	else
 	{
-		gl_baseviewwindowy = (vid.height-gl_viewheight) / 2;
-		gl_basewindowcentery = (float)(vid.height / 2);
+		gr_baseviewwindowy = (vid.height-gr_viewheight) / 2;
+		gr_basewindowcentery = (float)(vid.height / 2);
 	}
 
-	gl_pspritexscale = gl_viewwidth / BASEVIDWIDTH;
-	gl_pspriteyscale = ((vid.height*gl_pspritexscale*BASEVIDWIDTH)/BASEVIDHEIGHT)/vid.width;
+	gr_pspritexscale = gr_viewwidth / BASEVIDWIDTH;
+	gr_pspriteyscale = ((vid.height*gr_pspritexscale*BASEVIDWIDTH)/BASEVIDHEIGHT)/vid.width;
 
 	HWD.pfnFlushScreenTextures();
-}
-
-// Set view aiming, for the sky dome, the skybox,
-// and the normal view, all with a single function.
-static void HWR_SetTransformAiming(FTransform *trans, player_t *player, boolean skybox)
-{
-	// 1 = always on
-	// 2 = chasecam only
-	if (cv_glshearing.value == 1 || (cv_glshearing.value == 2 && R_IsViewpointThirdPerson(player, skybox)))
-	{
-		fixed_t fixedaiming = AIMINGTODY(aimingangle);
-		trans->viewaiming = FIXED_TO_FLOAT(fixedaiming);
-		trans->shearing = true;
-		gl_aimingangle = 0;
-	}
-	else
-	{
-		trans->shearing = false;
-		gl_aimingangle = aimingangle;
-	}
-
-	trans->anglex = (float)(gl_aimingangle>>ANGLETOFINESHIFT)*(360.0f/(float)FINEANGLES);
-}
-
-//
-// Sets the shader state.
-//
-static void HWR_SetShaderState(void)
-{
-	HWD.pfnSetSpecialState(HWD_SET_SHADERS, (INT32)HWR_UseShader());
 }
 
 // ==========================================================================
@@ -6028,7 +5888,7 @@ static void HWR_SetShaderState(void)
 // ==========================================================================
 void HWR_RenderSkyboxView(INT32 viewnumber, player_t *player)
 {
-	const float fpov = FIXED_TO_FLOAT(cv_fov.value+player->fovadd);
+	const float fpov = FIXED_TO_FLOAT(cv_grfov.value+player->fovadd);
 	postimg_t *type;
 
 	if (splitscreen && player == &players[secondarydisplayplayer])
@@ -6036,7 +5896,6 @@ void HWR_RenderSkyboxView(INT32 viewnumber, player_t *player)
 	else
 		type = &postimgtype;
 
-	if (!HWR_ShouldUsePaletteRendering())
 	{
 		// do we really need to save player (is it not the same)?
 		player_t *saved_player = stplyr;
@@ -6058,75 +5917,75 @@ void HWR_RenderSkyboxView(INT32 viewnumber, player_t *player)
 	dup_viewangle = viewangle;
 
 	// set window position
-	gl_centery = gl_basecentery;
-	gl_viewwindowy = gl_baseviewwindowy;
-	gl_windowcentery = gl_basewindowcentery;
+	gr_centery = gr_basecentery;
+	gr_viewwindowy = gr_baseviewwindowy;
+	gr_windowcentery = gr_basewindowcentery;
 	if (splitscreen && viewnumber == 1)
 	{
-		gl_viewwindowy += (vid.height/2);
-		gl_windowcentery += (vid.height/2);
+		gr_viewwindowy += (vid.height/2);
+		gr_windowcentery += (vid.height/2);
 	}
 
 	// check for new console commands.
 	NetUpdate();
 
-	gl_viewx = FIXED_TO_FLOAT(dup_viewx);
-	gl_viewy = FIXED_TO_FLOAT(dup_viewy);
-	gl_viewz = FIXED_TO_FLOAT(dup_viewz);
-	gl_viewsin = FIXED_TO_FLOAT(viewsin);
-	gl_viewcos = FIXED_TO_FLOAT(viewcos);
+	gr_viewx = FIXED_TO_FLOAT(dup_viewx);
+	gr_viewy = FIXED_TO_FLOAT(dup_viewy);
+	gr_viewz = FIXED_TO_FLOAT(dup_viewz);
+	gr_viewsin = FIXED_TO_FLOAT(viewsin);
+	gr_viewcos = FIXED_TO_FLOAT(viewcos);
+
+	gr_viewludsin = FIXED_TO_FLOAT(FINECOSINE(aimingangle>>ANGLETOFINESHIFT));
+	gr_viewludcos = FIXED_TO_FLOAT(-FINESINE(aimingangle>>ANGLETOFINESHIFT));
 
 	//04/01/2000: Hurdler: added for T&L
-	//                     It should replace all other gl_viewxxx when finished
-	memset(&atransform, 0x00, sizeof(FTransform));
-
-	HWR_SetTransformAiming(&atransform, player, true);
+	//                     It should replace all other gr_viewxxx when finished
+	atransform.anglex = (float)(aimingangle>>ANGLETOFINESHIFT)*(360.0f/(float)FINEANGLES);
 	atransform.angley = (float)(viewangle>>ANGLETOFINESHIFT)*(360.0f/(float)FINEANGLES);
-
-	gl_viewludsin = FIXED_TO_FLOAT(FINECOSINE(gl_aimingangle>>ANGLETOFINESHIFT));
-	gl_viewludcos = FIXED_TO_FLOAT(-FINESINE(gl_aimingangle>>ANGLETOFINESHIFT));
 
 	if (*type == postimg_flip)
 		atransform.flip = true;
 	else
 		atransform.flip = false;
 
-	atransform.x      = gl_viewx;  // FIXED_TO_FLOAT(viewx)
-	atransform.y      = gl_viewy;  // FIXED_TO_FLOAT(viewy)
-	atransform.z      = gl_viewz;  // FIXED_TO_FLOAT(viewz)
+	atransform.x      = gr_viewx;  // FIXED_TO_FLOAT(viewx)
+	atransform.y      = gr_viewy;  // FIXED_TO_FLOAT(viewy)
+	atransform.z      = gr_viewz;  // FIXED_TO_FLOAT(viewz)
 	atransform.scalex = 1;
 	atransform.scaley = (float)vid.width/vid.height;
 	atransform.scalez = 1;
-
 	atransform.fovxangle = fpov; // Tails
 	atransform.fovyangle = fpov; // Tails
-	if (player->viewrollangle != 0)
-	{
-		fixed_t rol = AngleFixed(player->viewrollangle);
-		atransform.rollangle = FIXED_TO_FLOAT(rol);
-		atransform.roll = true;
-	}
 	atransform.splitscreen = splitscreen;
 
-	gl_fovlud = (float)(1.0l/tan((double)(fpov*M_PIl/360l)));
+	gr_fovlud = (float)(1.0l/tan((double)(fpov*M_PIl/360l)));
 
 	//------------------------------------------------------------------------
 	HWR_ClearView();
 
+if (0)
+{ // I don't think this is ever used.
+	if (cv_grfog.value)
+		HWR_FoggingOn(); // First of all, turn it on, set the default user settings too
+	else
+		HWD.pfnSetSpecialState(HWD_SET_FOG_MODE, 0); // Turn it off
+}
+
 	if (drawsky)
-		HWR_DrawSkyBackground(player);
+		HWR_DrawSkyBackground();
 
 	//Hurdler: it doesn't work in splitscreen mode
 	drawsky = splitscreen;
 
 	HWR_ClearSprites();
 
+#ifdef SORTING
 	drawcount = 0;
-
+#endif
 #ifdef NEWCLIP
 	if (rendermode == render_opengl)
 	{
-		angle_t a1 = gld_FrustumAngle(gl_aimingangle);
+		angle_t a1 = gld_FrustumAngle();
 		gld_clipper_Clear();
 		gld_clipper_SafeAddClipRange(viewangle + a1, viewangle - a1);
 #ifdef HAVE_SPHEREFRUSTRUM
@@ -6143,9 +6002,6 @@ void HWR_RenderSkyboxView(INT32 viewnumber, player_t *player)
 
 	validcount++;
 
-	if (cv_glbatching.value)
-		HWR_StartBatching();
-
 	HWR_RenderBSPNode((INT32)numnodes-1);
 
 #ifndef NEWCLIP
@@ -6156,14 +6012,14 @@ void HWR_RenderSkyboxView(INT32 viewnumber, player_t *player)
 		viewangle = localaiming2;
 
 	// Handle stuff when you are looking farther up or down.
-	if ((gl_aimingangle || cv_fov.value+player->fovadd > 90*FRACUNIT))
+	if ((aimingangle || cv_grfov.value+player->fovadd > 90*FRACUNIT))
 	{
 		dup_viewangle += ANGLE_90;
 		HWR_ClearClipSegs();
 		HWR_RenderBSPNode((INT32)numnodes-1); //left
 
 		dup_viewangle += ANGLE_90;
-		if (((INT32)gl_aimingangle > ANGLE_45 || (INT32)gl_aimingangle<-ANGLE_45))
+		if (((INT32)aimingangle > ANGLE_45 || (INT32)aimingangle<-ANGLE_45))
 		{
 			HWR_ClearClipSegs();
 			HWR_RenderBSPNode((INT32)numnodes-1); //back
@@ -6177,9 +6033,6 @@ void HWR_RenderSkyboxView(INT32 viewnumber, player_t *player)
 	}
 #endif
 
-	if (cv_glbatching.value)
-		HWR_RenderBatches();
-
 	// Check for new console commands.
 	NetUpdate();
 
@@ -6190,21 +6043,39 @@ void HWR_RenderSkyboxView(INT32 viewnumber, player_t *player)
 #endif
 
 	// Draw MD2 and sprites
+#ifdef SORTING
 	HWR_SortVisSprites();
-	HWR_DrawSprites();
+#endif
 
+#ifdef SORTING
+	HWR_DrawSprites();
+#endif
 #ifdef NEWCORONAS
 	//Hurdler: they must be drawn before translucent planes, what about gl fog?
 	HWR_DrawCoronas();
 #endif
 
+#ifdef SORTING
 	if (numplanes || numpolyplanes || numwalls) //Hurdler: render 3D water and transparent walls after everything
 	{
 		HWR_CreateDrawNodes();
 	}
+#else
+	if (numfloors || numwalls)
+	{
+		HWD.pfnSetTransform(&atransform);
+		if (numfloors)
+			HWR_Render3DWater();
+		if (numwalls)
+			HWR_RenderTransparentWalls();
+	}
+#endif
 
 	HWD.pfnSetTransform(NULL);
-	HWD.pfnUnSetShader();
+
+	// put it off for menus etc
+	if (cv_grfog.value)
+		HWD.pfnSetSpecialState(HWD_SET_FOG_MODE, 0);
 
 	// Check for new console commands.
 	NetUpdate();
@@ -6219,7 +6090,7 @@ void HWR_RenderSkyboxView(INT32 viewnumber, player_t *player)
 // ==========================================================================
 void HWR_RenderPlayerView(INT32 viewnumber, player_t *player)
 {
-	const float fpov = FIXED_TO_FLOAT(cv_fov.value+player->fovadd);
+	const float fpov = FIXED_TO_FLOAT(cv_grfov.value+player->fovadd);
 	postimg_t *type;
 
 	const boolean skybox = (skyboxmo[0] && cv_skybox.value); // True if there's a skybox object and skyboxes are on
@@ -6236,18 +6107,12 @@ void HWR_RenderPlayerView(INT32 viewnumber, player_t *player)
 	ClearColor.blue = 0.0f;
 	ClearColor.alpha = 1.0f;
 
-	if (cv_glshaders.value)
-		HWD.pfnSetShaderInfo(HWD_SHADERINFO_LEVELTIME, (INT32)leveltime); // The water surface shader needs the leveltime.
-
 	if (viewnumber == 0) // Only do it if it's the first screen being rendered
 		HWD.pfnClearBuffer(true, false, &ClearColor); // Clear the Color Buffer, stops HOMs. Also seems to fix the skybox issue on Intel GPUs.
 
-	PS_START_TIMING(ps_hw_skyboxtime);
 	if (skybox && drawsky) // If there's a skybox and we should be drawing the sky, draw the skybox
 		HWR_RenderSkyboxView(viewnumber, player); // This is drawn before everything else so it is placed behind
-	PS_STOP_TIMING(ps_hw_skyboxtime);
 
-	if (!HWR_ShouldUsePaletteRendering())
 	{
 		// do we really need to save player (is it not the same)?
 		player_t *saved_player = stplyr;
@@ -6260,8 +6125,7 @@ void HWR_RenderPlayerView(INT32 viewnumber, player_t *player)
 	}
 
 	// note: sets viewangle, viewx, viewy, viewz
-	R_SetupFrame(player);
-	framecount++; // timedemo
+	R_SetupFrame(player, false); // This can stay false because it is only used to set viewsky in r_main.c, which isn't used here
 
 	// copy view cam position for local use
 	dup_viewx = viewx;
@@ -6270,75 +6134,75 @@ void HWR_RenderPlayerView(INT32 viewnumber, player_t *player)
 	dup_viewangle = viewangle;
 
 	// set window position
-	gl_centery = gl_basecentery;
-	gl_viewwindowy = gl_baseviewwindowy;
-	gl_windowcentery = gl_basewindowcentery;
+	gr_centery = gr_basecentery;
+	gr_viewwindowy = gr_baseviewwindowy;
+	gr_windowcentery = gr_basewindowcentery;
 	if (splitscreen && viewnumber == 1)
 	{
-		gl_viewwindowy += (vid.height/2);
-		gl_windowcentery += (vid.height/2);
+		gr_viewwindowy += (vid.height/2);
+		gr_windowcentery += (vid.height/2);
 	}
 
 	// check for new console commands.
 	NetUpdate();
 
-	gl_viewx = FIXED_TO_FLOAT(dup_viewx);
-	gl_viewy = FIXED_TO_FLOAT(dup_viewy);
-	gl_viewz = FIXED_TO_FLOAT(dup_viewz);
-	gl_viewsin = FIXED_TO_FLOAT(viewsin);
-	gl_viewcos = FIXED_TO_FLOAT(viewcos);
+	gr_viewx = FIXED_TO_FLOAT(dup_viewx);
+	gr_viewy = FIXED_TO_FLOAT(dup_viewy);
+	gr_viewz = FIXED_TO_FLOAT(dup_viewz);
+	gr_viewsin = FIXED_TO_FLOAT(viewsin);
+	gr_viewcos = FIXED_TO_FLOAT(viewcos);
+
+	gr_viewludsin = FIXED_TO_FLOAT(FINECOSINE(aimingangle>>ANGLETOFINESHIFT));
+	gr_viewludcos = FIXED_TO_FLOAT(-FINESINE(aimingangle>>ANGLETOFINESHIFT));
 
 	//04/01/2000: Hurdler: added for T&L
-	//                     It should replace all other gl_viewxxx when finished
-	memset(&atransform, 0x00, sizeof(FTransform));
-
-	HWR_SetTransformAiming(&atransform, player, false);
+	//                     It should replace all other gr_viewxxx when finished
+	atransform.anglex = (float)(aimingangle>>ANGLETOFINESHIFT)*(360.0f/(float)FINEANGLES);
 	atransform.angley = (float)(viewangle>>ANGLETOFINESHIFT)*(360.0f/(float)FINEANGLES);
-
-	gl_viewludsin = FIXED_TO_FLOAT(FINECOSINE(gl_aimingangle>>ANGLETOFINESHIFT));
-	gl_viewludcos = FIXED_TO_FLOAT(-FINESINE(gl_aimingangle>>ANGLETOFINESHIFT));
 
 	if (*type == postimg_flip)
 		atransform.flip = true;
 	else
 		atransform.flip = false;
 
-	atransform.x      = gl_viewx;  // FIXED_TO_FLOAT(viewx)
-	atransform.y      = gl_viewy;  // FIXED_TO_FLOAT(viewy)
-	atransform.z      = gl_viewz;  // FIXED_TO_FLOAT(viewz)
+	atransform.x      = gr_viewx;  // FIXED_TO_FLOAT(viewx)
+	atransform.y      = gr_viewy;  // FIXED_TO_FLOAT(viewy)
+	atransform.z      = gr_viewz;  // FIXED_TO_FLOAT(viewz)
 	atransform.scalex = 1;
 	atransform.scaley = (float)vid.width/vid.height;
 	atransform.scalez = 1;
-
 	atransform.fovxangle = fpov; // Tails
 	atransform.fovyangle = fpov; // Tails
-	if (player->viewrollangle != 0)
-	{
-		fixed_t rol = AngleFixed(player->viewrollangle);
-		atransform.rollangle = FIXED_TO_FLOAT(rol);
-		atransform.roll = true;
-	}
 	atransform.splitscreen = splitscreen;
 
-	gl_fovlud = (float)(1.0l/tan((double)(fpov*M_PIl/360l)));
+	gr_fovlud = (float)(1.0l/tan((double)(fpov*M_PIl/360l)));
 
 	//------------------------------------------------------------------------
 	HWR_ClearView(); // Clears the depth buffer and resets the view I believe
 
+if (0)
+{ // I don't think this is ever used.
+	if (cv_grfog.value)
+		HWR_FoggingOn(); // First of all, turn it on, set the default user settings too
+	else
+		HWD.pfnSetSpecialState(HWD_SET_FOG_MODE, 0); // Turn it off
+}
+
 	if (!skybox && drawsky) // Don't draw the regular sky if there's a skybox
-		HWR_DrawSkyBackground(player);
+		HWR_DrawSkyBackground();
 
 	//Hurdler: it doesn't work in splitscreen mode
 	drawsky = splitscreen;
 
 	HWR_ClearSprites();
 
+#ifdef SORTING
 	drawcount = 0;
-
+#endif
 #ifdef NEWCLIP
 	if (rendermode == render_opengl)
 	{
-		angle_t a1 = gld_FrustumAngle(gl_aimingangle);
+		angle_t a1 = gld_FrustumAngle();
 		gld_clipper_Clear();
 		gld_clipper_SafeAddClipRange(viewangle + a1, viewangle - a1);
 #ifdef HAVE_SPHEREFRUSTRUM
@@ -6353,14 +6217,7 @@ void HWR_RenderPlayerView(INT32 viewnumber, player_t *player)
 	//                     Actually it only works on Walls and Planes
 	HWD.pfnSetTransform(&atransform);
 
-	ps_numbspcalls.value.i = 0;
-	ps_numpolyobjects.value.i = 0;
-	PS_START_TIMING(ps_bsptime);
-
 	validcount++;
-
-	if (cv_glbatching.value)
-		HWR_StartBatching();
 
 	HWR_RenderBSPNode((INT32)numnodes-1);
 
@@ -6372,14 +6229,14 @@ void HWR_RenderPlayerView(INT32 viewnumber, player_t *player)
 		viewangle = localaiming2;
 
 	// Handle stuff when you are looking farther up or down.
-	if ((gl_aimingangle || cv_fov.value+player->fovadd > 90*FRACUNIT))
+	if ((aimingangle || cv_grfov.value+player->fovadd > 90*FRACUNIT))
 	{
 		dup_viewangle += ANGLE_90;
 		HWR_ClearClipSegs();
 		HWR_RenderBSPNode((INT32)numnodes-1); //left
 
 		dup_viewangle += ANGLE_90;
-		if (((INT32)gl_aimingangle > ANGLE_45 || (INT32)gl_aimingangle<-ANGLE_45))
+		if (((INT32)aimingangle > ANGLE_45 || (INT32)aimingangle<-ANGLE_45))
 		{
 			HWR_ClearClipSegs();
 			HWR_RenderBSPNode((INT32)numnodes-1); //back
@@ -6393,11 +6250,6 @@ void HWR_RenderPlayerView(INT32 viewnumber, player_t *player)
 	}
 #endif
 
-	PS_STOP_TIMING(ps_bsptime);
-
-	if (cv_glbatching.value)
-		HWR_RenderBatches();
-
 	// Check for new console commands.
 	NetUpdate();
 
@@ -6408,29 +6260,39 @@ void HWR_RenderPlayerView(INT32 viewnumber, player_t *player)
 #endif
 
 	// Draw MD2 and sprites
-	ps_numsprites.value.i = gl_visspritecount;
-	PS_START_TIMING(ps_hw_spritesorttime);
+#ifdef SORTING
 	HWR_SortVisSprites();
-	PS_STOP_TIMING(ps_hw_spritesorttime);
-	PS_START_TIMING(ps_hw_spritedrawtime);
-	HWR_DrawSprites();
-	PS_STOP_TIMING(ps_hw_spritedrawtime);
+#endif
 
+#ifdef SORTING
+	HWR_DrawSprites();
+#endif
 #ifdef NEWCORONAS
 	//Hurdler: they must be drawn before translucent planes, what about gl fog?
 	HWR_DrawCoronas();
 #endif
 
-	ps_numdrawnodes.value.i = 0;
-	ps_hw_nodesorttime.value.p = 0;
-	ps_hw_nodedrawtime.value.p = 0;
+#ifdef SORTING
 	if (numplanes || numpolyplanes || numwalls) //Hurdler: render 3D water and transparent walls after everything
 	{
 		HWR_CreateDrawNodes();
 	}
+#else
+	if (numfloors || numpolyplanes || numwalls)
+	{
+		HWD.pfnSetTransform(&atransform);
+		if (numfloors)
+			HWR_Render3DWater();
+		if (numwalls)
+			HWR_RenderTransparentWalls();
+	}
+#endif
 
 	HWD.pfnSetTransform(NULL);
-	HWD.pfnUnSetShader();
+
+	// put it off for menus etc
+	if (cv_grfog.value)
+		HWD.pfnSetSpecialState(HWD_SET_FOG_MODE, 0);
 
 	HWR_DoPostProcessor(player);
 
@@ -6442,279 +6304,148 @@ void HWR_RenderPlayerView(INT32 viewnumber, player_t *player)
 	HWD.pfnGClipRect(0, 0, vid.width, vid.height, NZCLIP_PLANE);
 }
 
-// Returns whether palette rendering is "actually enabled."
-// Can't have palette rendering if shaders are disabled.
-boolean HWR_ShouldUsePaletteRendering(void)
-{
-	return (cv_glpaletterendering.value && HWR_UseShader());
-}
+// ==========================================================================
+//                                                                        FOG
+// ==========================================================================
 
-// enable or disable palette rendering state depending on settings and availability
-// called when relevant settings change
-// shader recompilation is done in the cvar callback
-static void HWR_TogglePaletteRendering(void)
+/// \author faB
+
+static UINT32 atohex(const char *s)
 {
-	// which state should we go to?
-	if (HWR_ShouldUsePaletteRendering())
+	INT32 iCol;
+	const char *sCol;
+	char cCol;
+	INT32 i;
+
+	if (strlen(s)<6)
+		return 0;
+
+	iCol = 0;
+	sCol = s;
+	for (i = 0; i < 6; i++, sCol++)
 	{
-		// are we not in that state already?
-		if (!gl_palette_rendering_state)
+		iCol <<= 4;
+		cCol = *sCol;
+		if (cCol >= '0' && cCol <= '9')
+			iCol |= cCol - '0';
+		else
 		{
-			gl_palette_rendering_state = true;
-
-			// The textures will still be converted to RGBA by r_opengl.
-			// This however makes hw_cache use paletted blending for composite textures!
-			// (patchformat is not touched)
-			textureformat = GL_TEXFMT_P_8;
-
-			HWR_SetMapPalette();
-			HWR_SetPalette(pLocalPalette);
-
-			// If the r_opengl "texture palette" stays the same during this switch, these textures
-			// will not be cleared out. However they are still out of date since the
-			// composite texture blending method has changed. Therefore they need to be cleared.
-			HWR_LoadMapTextures(numtextures);
+			if (cCol >= 'F')
+				cCol -= 'a' - 'A';
+			if (cCol >= 'A' && cCol <= 'F')
+				iCol = iCol | (cCol - 'A' + 10);
 		}
 	}
-	else
-	{
-		// are we not in that state already?
-		if (gl_palette_rendering_state)
-		{
-			gl_palette_rendering_state = false;
-			textureformat = GL_TEXFMT_RGBA;
-			HWR_SetPalette(pLocalPalette);
-			// If the r_opengl "texture palette" stays the same during this switch, these textures
-			// will not be cleared out. However they are still out of date since the
-			// composite texture blending method has changed. Therefore they need to be cleared.
-			HWR_LoadMapTextures(numtextures);
-		}
-	}
+	//CONS_Debug(DBG_RENDER, "col %x\n", iCol);
+	return iCol;
 }
 
-void HWR_LoadLevel(void)
+static void HWR_FoggingOn(void)
 {
-#ifdef ALAM_LIGHTING
-	// BP: reset light between levels (we draw preview frame lights on current frame)
-	HWR_ResetLights();
-#endif
-
-	HWR_CreatePlanePolygons((INT32)numnodes - 1);
-
-	// Build the sky dome
-	HWR_ClearSkyDome();
-	HWR_BuildSkyDome();
-
-	if (HWR_ShouldUsePaletteRendering())
-		HWR_SetMapPalette();
-
-	gl_maploaded = true;
+	HWD.pfnSetSpecialState(HWD_SET_FOG_COLOR, atohex(cv_grfogcolor.string));
+	HWD.pfnSetSpecialState(HWD_SET_FOG_DENSITY, cv_grfogdensity.value);
+	HWD.pfnSetSpecialState(HWD_SET_FOG_MODE, 1);
 }
 
 // ==========================================================================
 //                                                         3D ENGINE COMMANDS
 // ==========================================================================
 
-static CV_PossibleValue_t glshaders_cons_t[] = {{0, "Off"}, {1, "On"}, {2, "Ignore custom shaders"}, {0, NULL}};
-static CV_PossibleValue_t glmodelinterpolation_cons_t[] = {{0, "Off"}, {1, "Sometimes"}, {2, "Always"}, {0, NULL}};
-static CV_PossibleValue_t glfakecontrast_cons_t[] = {{0, "Off"}, {1, "On"}, {2, "Smooth"}, {0, NULL}};
-static CV_PossibleValue_t glshearing_cons_t[] = {{0, "Off"}, {1, "On"}, {2, "Third-person"}, {0, NULL}};
 
-static void CV_glfiltermode_OnChange(void);
-static void CV_glanisotropic_OnChange(void);
-static void CV_glmodellighting_OnChange(void);
-static void CV_glpaletterendering_OnChange(void);
-static void CV_glpalettedepth_OnChange(void);
-static void CV_glshaders_OnChange(void);
-
-static CV_PossibleValue_t glfiltermode_cons_t[]= {{HWD_SET_TEXTUREFILTER_POINTSAMPLED, "Nearest"},
-	{HWD_SET_TEXTUREFILTER_BILINEAR, "Bilinear"}, {HWD_SET_TEXTUREFILTER_TRILINEAR, "Trilinear"},
-	{HWD_SET_TEXTUREFILTER_MIXED1, "Linear_Nearest"},
-	{HWD_SET_TEXTUREFILTER_MIXED2, "Nearest_Linear"},
-	{HWD_SET_TEXTUREFILTER_MIXED3, "Nearest_Mipmap"},
-	{0, NULL}};
-CV_PossibleValue_t glanisotropicmode_cons_t[] = {{1, "MIN"}, {16, "MAX"}, {0, NULL}};
-
-consvar_t cv_glshaders = CVAR_INIT ("gr_shaders", "On", CV_SAVE|CV_CALL, glshaders_cons_t, CV_glshaders_OnChange);
-consvar_t cv_glallowshaders = CVAR_INIT ("gr_allowclientshaders", "On", CV_NETVAR, CV_OnOff, NULL);
-consvar_t cv_fovchange = CVAR_INIT ("gr_fovchange", "Off", CV_SAVE, CV_OnOff, NULL);
-
-#ifdef ALAM_LIGHTING
-consvar_t cv_gldynamiclighting = CVAR_INIT ("gr_dynamiclighting", "On", CV_SAVE, CV_OnOff, NULL);
-consvar_t cv_glstaticlighting  = CVAR_INIT ("gr_staticlighting", "On", CV_SAVE, CV_OnOff, NULL);
-consvar_t cv_glcoronas = CVAR_INIT ("gr_coronas", "On", CV_SAVE, CV_OnOff, NULL);
-consvar_t cv_glcoronasize = CVAR_INIT ("gr_coronasize", "1", CV_SAVE|CV_FLOAT, 0, NULL);
-#endif
-
-consvar_t cv_glmodels = CVAR_INIT ("gr_models", "Off", CV_SAVE, CV_OnOff, NULL);
-consvar_t cv_glmodelinterpolation = CVAR_INIT ("gr_modelinterpolation", "Sometimes", CV_SAVE, glmodelinterpolation_cons_t, NULL);
-consvar_t cv_glmodellighting = CVAR_INIT ("gr_modellighting", "Off", CV_SAVE|CV_CALL, CV_OnOff, CV_glmodellighting_OnChange);
-
-consvar_t cv_glshearing = CVAR_INIT ("gr_shearing", "Off", CV_SAVE, glshearing_cons_t, NULL);
-consvar_t cv_glspritebillboarding = CVAR_INIT ("gr_spritebillboarding", "Off", CV_SAVE, CV_OnOff, NULL);
-consvar_t cv_glskydome = CVAR_INIT ("gr_skydome", "On", CV_SAVE, CV_OnOff, NULL);
-consvar_t cv_glfakecontrast = CVAR_INIT ("gr_fakecontrast", "Smooth", CV_SAVE, glfakecontrast_cons_t, NULL);
-consvar_t cv_glslopecontrast = CVAR_INIT ("gr_slopecontrast", "Off", CV_SAVE, CV_OnOff, NULL);
-
-consvar_t cv_glfiltermode = CVAR_INIT ("gr_filtermode", "Nearest", CV_SAVE|CV_CALL, glfiltermode_cons_t, CV_glfiltermode_OnChange);
-consvar_t cv_glanisotropicmode = CVAR_INIT ("gr_anisotropicmode", "1", CV_CALL, glanisotropicmode_cons_t, CV_glanisotropic_OnChange);
-
-consvar_t cv_glsolvetjoin = CVAR_INIT ("gr_solvetjoin", "On", 0, CV_OnOff, NULL);
-
-consvar_t cv_glbatching = CVAR_INIT ("gr_batching", "On", 0, CV_OnOff, NULL);
-
-static CV_PossibleValue_t glpalettedepth_cons_t[] = {{16, "16 bits"}, {24, "24 bits"}, {0, NULL}};
-
-consvar_t cv_glpaletterendering = CVAR_INIT ("gr_paletterendering", "Off", CV_SAVE|CV_CALL, CV_OnOff, CV_glpaletterendering_OnChange);
-consvar_t cv_glpalettedepth = CVAR_INIT ("gr_palettedepth", "16 bits", CV_SAVE|CV_CALL, glpalettedepth_cons_t, CV_glpalettedepth_OnChange);
-
-#define ONLY_IF_GL_LOADED if (vid.glstate != VID_GL_LIBRARY_LOADED) return;
-
-static void CV_glfiltermode_OnChange(void)
+static void CV_grFov_OnChange(void)
 {
-	ONLY_IF_GL_LOADED
-	HWD.pfnSetSpecialState(HWD_SET_TEXTUREFILTERMODE, cv_glfiltermode.value);
+	if ((netgame || multiplayer) && !cv_debug && cv_grfov.value != 90*FRACUNIT)
+		CV_Set(&cv_grfov, cv_grfov.defaultvalue);
 }
 
-static void CV_glanisotropic_OnChange(void)
+static void Command_GrStats_f(void)
 {
-	ONLY_IF_GL_LOADED
-	HWD.pfnSetSpecialState(HWD_SET_TEXTUREANISOTROPICMODE, cv_glanisotropicmode.value);
+	Z_CheckHeap(9875); // debug
+
+	CONS_Printf(M_GetText("Patch info headers: %7s kb\n"), sizeu1(Z_TagUsage(PU_HWRPATCHINFO)>>10));
+	CONS_Printf(M_GetText("3D Texture cache  : %7s kb\n"), sizeu1(Z_TagUsage(PU_HWRCACHE)>>10));
+	CONS_Printf(M_GetText("Plane polygon     : %7s kb\n"), sizeu1(Z_TagUsage(PU_HWRPLANE)>>10));
 }
 
-static void CV_glmodellighting_OnChange(void)
-{
-	ONLY_IF_GL_LOADED
-	// if shaders have been compiled, then they now need to be recompiled.
-	if (gl_shadersavailable)
-		HWR_CompileShaders();
-}
 
-static void CV_glpaletterendering_OnChange(void)
-{
-	ONLY_IF_GL_LOADED
-	if (gl_shadersavailable)
-	{
-		HWR_CompileShaders();
-		HWR_TogglePaletteRendering();
-	}
-}
+// **************************************************************************
+//                                                            3D ENGINE SETUP
+// **************************************************************************
 
-static void CV_glpalettedepth_OnChange(void)
-{
-	ONLY_IF_GL_LOADED
-	// refresh the screen palette
-	if (HWR_ShouldUsePaletteRendering())
-		HWR_SetPalette(pLocalPalette);
-}
-
-static void CV_glshaders_OnChange(void)
-{
-	ONLY_IF_GL_LOADED
-	HWR_SetShaderState();
-	if (cv_glpaletterendering.value)
-	{
-		// can't do palette rendering without shaders, so update the state if needed
-		HWR_TogglePaletteRendering();
-	}
-}
-
+// --------------------------------------------------------------------------
+// Add hardware engine commands & consvars
+// --------------------------------------------------------------------------
 //added by Hurdler: console varibale that are saved
 void HWR_AddCommands(void)
 {
-	CV_RegisterVar(&cv_fovchange);
-
-#ifdef ALAM_LIGHTING
-	CV_RegisterVar(&cv_glstaticlighting);
-	CV_RegisterVar(&cv_gldynamiclighting);
-	CV_RegisterVar(&cv_glcoronasize);
-	CV_RegisterVar(&cv_glcoronas);
-#endif
-
-	CV_RegisterVar(&cv_glmodellighting);
-	CV_RegisterVar(&cv_glmodelinterpolation);
-	CV_RegisterVar(&cv_glmodels);
-
-	CV_RegisterVar(&cv_glskydome);
-	CV_RegisterVar(&cv_glspritebillboarding);
-	CV_RegisterVar(&cv_glfakecontrast);
-	CV_RegisterVar(&cv_glshearing);
-	CV_RegisterVar(&cv_glshaders);
-	CV_RegisterVar(&cv_glallowshaders);
-
-	CV_RegisterVar(&cv_glfiltermode);
-	CV_RegisterVar(&cv_glsolvetjoin);
-
-	CV_RegisterVar(&cv_glbatching);
-
-	CV_RegisterVar(&cv_glpaletterendering);
-	CV_RegisterVar(&cv_glpalettedepth);
-
-#ifndef NEWCLIP
-	CV_RegisterVar(&cv_glclipwalls);
-#endif
+	CV_RegisterVar(&cv_grrounddown);
+	CV_RegisterVar(&cv_grfov);
+	CV_RegisterVar(&cv_grfogdensity);
+	CV_RegisterVar(&cv_grfiltermode);
+	CV_RegisterVar(&cv_granisotropicmode);
+	CV_RegisterVar(&cv_grcorrecttricks);
+	CV_RegisterVar(&cv_grsolvetjoin);
 }
 
-void HWR_AddSessionCommands(void)
+static inline void HWR_AddEngineCommands(void)
 {
-	if (gl_sessioncommandsadded)
-		return;
-	CV_RegisterVar(&cv_glanisotropicmode);
-	gl_sessioncommandsadded = true;
+	// engine state variables
+	//CV_RegisterVar(&cv_grzbuffer);
+#ifndef NEWCLIP
+	CV_RegisterVar(&cv_grclipwalls);
+#endif
+
+	// engine development mode variables
+	// - usage may vary from version to version..
+	CV_RegisterVar(&cv_gralpha);
+	CV_RegisterVar(&cv_grbeta);
+
+	// engine commands
+	COM_AddCommand("gr_stats", Command_GrStats_f);
 }
+
 
 // --------------------------------------------------------------------------
 // Setup the hardware renderer
 // --------------------------------------------------------------------------
 void HWR_Startup(void)
 {
-	if (!gl_init)
+	static boolean startupdone = false;
+
+	// setup GLPatch_t scaling
+	gr_patch_scalex = (float)(1.0f / vid.width);
+	gr_patch_scaley = (float)(1.0f / vid.height);
+
+	// initalze light lut translation
+	InitLumLut();
+
+	// do this once
+	if (!startupdone)
 	{
-		CONS_Printf("HWR_Startup()...\n");
-
-		textureformat = patchformat = GL_TEXFMT_RGBA;
-
+		CONS_Printf("HWR_Startup()\n");
 		HWR_InitPolyPool();
-		HWR_AddSessionCommands();
-		HWR_InitMapTextures();
-		HWR_InitModels();
+		// add console cmds & vars
+		HWR_AddEngineCommands();
+		HWR_InitTextureCache();
+
+		HWR_InitMD2();
+
 #ifdef ALAM_LIGHTING
 		HWR_InitLight();
 #endif
-
-		gl_shadersavailable = HWR_InitShaders();
-		HWR_SetShaderState();
-		HWR_LoadAllCustomShaders();
-		HWR_TogglePaletteRendering();
 	}
 
-	gl_init = true;
+	if (rendermode == render_opengl)
+		textureformat = patchformat =
+#ifdef _NDS
+			GR_TEXFMT_P_8;
+#else
+			GR_RGBA;
+#endif
+
+	startupdone = true;
 }
 
-// --------------------------------------------------------------------------
-// Called after switching to the hardware renderer
-// --------------------------------------------------------------------------
-void HWR_Switch(void)
-{
-	// Add session commands
-	if (!gl_sessioncommandsadded)
-		HWR_AddSessionCommands();
-
-	// Set special states from CVARs
-	HWD.pfnSetSpecialState(HWD_SET_TEXTUREFILTERMODE, cv_glfiltermode.value);
-	HWD.pfnSetSpecialState(HWD_SET_TEXTUREANISOTROPICMODE, cv_glanisotropicmode.value);
-
-	// Load textures
-	if (!gl_maptexturesloaded)
-		HWR_LoadMapTextures(numtextures);
-
-	// Create plane polygons
-	if (!gl_maploaded && (gamestate == GS_LEVEL || (gamestate == GS_TITLESCREEN && titlemapinaction)))
-	{
-		HWR_ClearAllTextures();
-		HWR_LoadLevel();
-	}
-}
 
 // --------------------------------------------------------------------------
 // Free resources allocated by the hardware renderer
@@ -6724,7 +6455,7 @@ void HWR_Shutdown(void)
 	CONS_Printf("HWR_Shutdown()\n");
 	HWR_FreeExtraSubsectors();
 	HWR_FreePolyPool();
-	HWR_FreeMapTextures();
+	HWR_FreeTextureCache();
 	HWD.pfnFlushScreenTextures();
 }
 
@@ -6732,26 +6463,128 @@ void transform(float *cx, float *cy, float *cz)
 {
 	float tr_x,tr_y;
 	// translation
-	tr_x = *cx - gl_viewx;
-	tr_y = *cz - gl_viewy;
+	tr_x = *cx - gr_viewx;
+	tr_y = *cz - gr_viewy;
 //	*cy = *cy;
 
 	// rotation around vertical y axis
-	*cx = (tr_x * gl_viewsin) - (tr_y * gl_viewcos);
-	tr_x = (tr_x * gl_viewcos) + (tr_y * gl_viewsin);
+	*cx = (tr_x * gr_viewsin) - (tr_y * gr_viewcos);
+	tr_x = (tr_x * gr_viewcos) + (tr_y * gr_viewsin);
 
 	//look up/down ----TOTAL SUCKS!!!--- do the 2 in one!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-	tr_y = *cy - gl_viewz;
+	tr_y = *cy - gr_viewz;
 
-	*cy = (tr_x * gl_viewludcos) + (tr_y * gl_viewludsin);
-	*cz = (tr_x * gl_viewludsin) - (tr_y * gl_viewludcos);
+	*cy = (tr_x * gr_viewludcos) + (tr_y * gr_viewludsin);
+	*cz = (tr_x * gr_viewludsin) - (tr_y * gr_viewludcos);
 
 	//scale y before frustum so that frustum can be scaled to screen height
-	*cy *= ORIGINAL_ASPECT * gl_fovlud;
-	*cx *= gl_fovlud;
+	*cy *= ORIGINAL_ASPECT * gr_fovlud;
+	*cx *= gr_fovlud;
 }
 
-void HWR_AddTransparentWall(FOutVector *wallVerts, FSurfaceInfo *pSurf, INT32 texnum, FBITFIELD blend, boolean fogwall, INT32 lightlevel, extracolormap_t *wallcolormap)
+
+//Hurdler: 3D Water stuff
+#define MAX_3DWATER 512
+
+#ifndef SORTING
+static void HWR_Add3DWater(lumpnum_t lumpnum, extrasubsector_t *xsub,
+	fixed_t fixedheight, INT32 lightlevel, INT32 alpha, sector_t *FOFSector)
+{
+	static size_t allocedplanes = 0;
+
+	// Force realloc if buffer has been freed
+	if (!planeinfo)
+		allocedplanes = 0;
+
+	if (allocedplanes < numfloors + 1)
+	{
+		allocedplanes += MAX_3DWATER;
+		Z_Realloc(planeinfo, allocedplanes * sizeof (*planeinfo), PU_LEVEL, &planeinfo);
+	}
+	planeinfo[numfloors].fixedheight = fixedheight;
+	planeinfo[numfloors].lightlevel = lightlevel;
+	planeinfo[numfloors].lumpnum = lumpnum;
+	planeinfo[numfloors].xsub = xsub;
+	planeinfo[numfloors].alpha = alpha;
+	planeinfo[numfloors].FOFSector = FOFSector;
+	numfloors++;
+}
+#endif
+
+#define DIST_PLANE(i) ABS(planeinfo[(i)].fixedheight-dup_viewz)
+
+#if 0
+static void HWR_QuickSortPlane(INT32 start, INT32 finish)
+{
+	INT32 left = start;
+	INT32 right = finish;
+	INT32 starterval = (INT32)((right+left)/2); //pick a starter
+
+	planeinfo_t temp;
+
+	//'sort of sort' the two halves of the data list about starterval
+	while (right > left);
+	{
+		while (DIST_PLANE(left) < DIST_PLANE(starterval)) left++; //attempt to find a bigger value on the left
+		while (DIST_PLANE(right) > DIST_PLANE(starterval)) right--; //attempt to find a smaller value on the right
+
+		if (left < right) //if we haven't gone too far
+		{
+			//switch them
+			M_Memcpy(&temp, &planeinfo[left], sizeof (planeinfo_t));
+			M_Memcpy(&planeinfo[left], &planeinfo[right], sizeof (planeinfo_t));
+			M_Memcpy(&planeinfo[right], &temp, sizeof (planeinfo_t));
+			//move the bounds
+			left++;
+			right--;
+		}
+	}
+
+	if (start < right) HWR_QuickSortPlane(start, right);
+	if (left < finish) HWR_QuickSortPlane(left, finish);
+}
+#endif
+
+#ifndef SORTING
+static void HWR_Render3DWater(void)
+{
+	size_t i;
+
+	//bubble sort 3D Water for correct alpha blending
+	{
+		boolean permut = true;
+		while (permut)
+		{
+			size_t j;
+			for (j = 0, permut= false; j < numfloors-1; j++)
+			{
+				if (ABS(planeinfo[j].fixedheight-dup_viewz) < ABS(planeinfo[j+1].fixedheight-dup_viewz))
+				{
+					planeinfo_t temp;
+					M_Memcpy(&temp, &planeinfo[j+1], sizeof (planeinfo_t));
+					M_Memcpy(&planeinfo[j+1], &planeinfo[j], sizeof (planeinfo_t));
+					M_Memcpy(&planeinfo[j], &temp, sizeof (planeinfo_t));
+					permut = true;
+				}
+			}
+		}
+	}
+#if 0 //thanks epat, but it's goes looping forever on CTF map Silver Cascade Zone
+	HWR_QuickSortPlane(0, numplanes-1);
+#endif
+
+	gr_frontsector = NULL; //Hurdler: gr_fronsector is no longer valid
+	for (i = 0; i < numfloors; i++)
+	{
+		HWR_GetFlat(planeinfo[i].lumpnum);
+		HWR_RenderPlane(NULL, planeinfo[i].xsub, planeinfo[i].isceiling, planeinfo[i].fixedheight, PF_Translucent, planeinfo[i].lightlevel, planeinfo[i].lumpnum,
+			planeinfo[i].FOFSector, planeinfo[i].alpha, planeinfo[i].fogplane, planeinfo[i].planecolormap);
+	}
+	numfloors = 0;
+}
+#endif
+
+static void HWR_AddTransparentWall(wallVert3D *wallVerts, FSurfaceInfo *pSurf, INT32 texnum, FBITFIELD blend, boolean fogwall, INT32 lightlevel, extracolormap_t *wallcolormap)
 {
 	static size_t allocedwalls = 0;
 
@@ -6769,43 +6602,107 @@ void HWR_AddTransparentWall(FOutVector *wallVerts, FSurfaceInfo *pSurf, INT32 te
 	M_Memcpy(&wallinfo[numwalls].Surf, pSurf, sizeof (FSurfaceInfo));
 	wallinfo[numwalls].texnum = texnum;
 	wallinfo[numwalls].blend = blend;
+#ifdef SORTING
 	wallinfo[numwalls].drawcount = drawcount++;
+#endif
 	wallinfo[numwalls].fogwall = fogwall;
 	wallinfo[numwalls].lightlevel = lightlevel;
 	wallinfo[numwalls].wallcolormap = wallcolormap;
 	numwalls++;
 }
-
-void HWR_RenderWall(FOutVector *wallVerts, FSurfaceInfo *pSurf, FBITFIELD blend, boolean fogwall, INT32 lightlevel, extracolormap_t *wallcolormap)
+#ifndef SORTING
+static void HWR_RenderTransparentWalls(void)
 {
-	FBITFIELD blendmode = blend;
-	UINT8 alpha = pSurf->PolyColor.s.alpha; // retain the alpha
+	size_t i;
 
-	INT32 shader = -1;
+	/*{ // sorting is disbale for now, do it!
+		INT32 permut = 1;
+		while (permut)
+		{
+			INT32 j;
+			for (j = 0, permut = 0; j < numwalls-1; j++)
+			{
+				if (ABS(wallinfo[j].fixedheight-dup_viewz) < ABS(wallinfo[j+1].fixedheight-dup_viewz))
+				{
+					wallinfo_t temp;
+					M_Memcpy(&temp, &wallinfo[j+1], sizeof (wallinfo_t));
+					M_Memcpy(&wallinfo[j+1], &wallinfo[j], sizeof (wallinfo_t));
+					M_Memcpy(&wallinfo[j], &temp, sizeof (wallinfo_t));
+					permut = 1;
+				}
+			}
+		}
+	}*/
 
-	// Lighting is done here instead so that fog isn't drawn incorrectly on transparent walls after sorting
-	HWR_Lighting(pSurf, lightlevel, wallcolormap);
-
-	pSurf->PolyColor.s.alpha = alpha; // put the alpha back after lighting
-
-	if (blend & PF_Environment)
-		blendmode |= PF_Occlude;	// PF_Occlude must be used for solid objects
-
-	if (HWR_UseShader())
+	for (i = 0; i < numwalls; i++)
 	{
-		if (fogwall)
-			shader = SHADER_FOG;
-		else
-			shader = SHADER_WALL;
+		HWR_GetTexture(wallinfo[i].texnum);
+		HWR_RenderWall(wallinfo[i].wallVerts, &wallinfo[i].Surf, wallinfo[i].blend, wallinfo[i].wall->fogwall, wallinfo[i].wall->lightlevel, wallinfo[i].wall->wallcolormap);
+	}
+	numwalls = 0;
+}
+#endif
+static void HWR_RenderWall(wallVert3D   *wallVerts, FSurfaceInfo *pSurf, FBITFIELD blend, boolean fogwall, INT32 lightlevel, extracolormap_t *wallcolormap)
+{
+	FOutVector  trVerts[4];
+	UINT8       i;
+	FOutVector  *wv;
+	UINT8 alpha;
 
-		blendmode |= PF_ColorMapped;
+	// transform
+	wv = trVerts;
+	// it sounds really stupid to do this conversion with the new T&L code
+	// we should directly put the right information in the right structure
+	// wallVerts3D seems ok, doesn't need FOutVector
+	// also remove the light copy
+	for (i = 0; i < 4; i++, wv++, wallVerts++)
+	{
+		wv->sow = wallVerts->s;
+		wv->tow = wallVerts->t;
+		wv->x   = wallVerts->x;
+		wv->y   = wallVerts->y;
+		wv->z = wallVerts->z;
 	}
 
-	if (fogwall)
-		blendmode |= PF_Fog;
+	alpha = pSurf->FlatColor.s.alpha; // retain the alpha
 
-	blendmode |= PF_Modulated;	// No PF_Occlude means overlapping (incorrect) transparency
-	HWR_ProcessPolygon(pSurf, wallVerts, 4, blendmode, shader, false);
+	// Lighting is done here instead so that fog isn't drawn incorrectly on transparent walls after sorting
+	if (wallcolormap)
+	{
+		if (fogwall)
+			pSurf->FlatColor.rgba = HWR_Lighting(lightlevel, wallcolormap->rgba, wallcolormap->fadergba, true, false);
+		else
+			pSurf->FlatColor.rgba = HWR_Lighting(lightlevel, wallcolormap->rgba, wallcolormap->fadergba, false, false);
+	}
+	else
+	{
+		if (fogwall)
+			pSurf->FlatColor.rgba = HWR_Lighting(lightlevel, NORMALFOG, FADEFOG, true, false);
+		else
+			pSurf->FlatColor.rgba = HWR_Lighting(lightlevel, NORMALFOG, FADEFOG, false, false);
+	}
+
+	pSurf->FlatColor.s.alpha = alpha; // put the alpha back after lighting
+
+	if (blend & PF_Environment)
+		HWD.pfnDrawPolygon(pSurf, trVerts, 4, blend|PF_Modulated|PF_Clip|PF_Occlude); // PF_Occlude must be used for solid objects
+	else
+		HWD.pfnDrawPolygon(pSurf, trVerts, 4, blend|PF_Modulated|PF_Clip); // No PF_Occlude means overlapping (incorrect) transparency
+
+#ifdef WALLSPLATS
+	if (gr_curline->linedef->splats && cv_splats.value)
+		HWR_DrawSegsSplats(pSurf);
+
+#ifdef ALAM_LIGHTING
+	//Hurdler: TODO: do static lighting using gr_curline->lm
+	HWR_WallLighting(trVerts);
+#endif
+#endif
+}
+
+void HWR_SetPaletteColor(INT32 palcolor)
+{
+	HWD.pfnSetSpecialState(HWD_SET_PALETTECOLOR, palcolor);
 }
 
 INT32 HWR_GetTextureUsed(void)
@@ -6817,8 +6714,6 @@ void HWR_DoPostProcessor(player_t *player)
 {
 	postimg_t *type;
 
-	HWD.pfnUnSetShader();
-
 	if (splitscreen && player == &players[secondarydisplayplayer])
 		type = &postimgtype2;
 	else
@@ -6826,7 +6721,7 @@ void HWR_DoPostProcessor(player_t *player)
 
 	// Armageddon Blast Flash!
 	// Could this even be considered postprocessor?
-	if (player->flashcount && !HWR_ShouldUsePaletteRendering())
+	if (player->flashcount)
 	{
 		FOutVector      v[4];
 		FSurfaceInfo Surf;
@@ -6838,31 +6733,31 @@ void HWR_DoPostProcessor(player_t *player)
 		// This won't change if the flash palettes are changed unfortunately, but it works for its purpose
 		if (player->flashpal == PAL_NUKE)
 		{
-			Surf.PolyColor.s.red = 0xff;
-			Surf.PolyColor.s.green = Surf.PolyColor.s.blue = 0x7F; // The nuke palette is kind of pink-ish
+			Surf.FlatColor.s.red = 0xff;
+			Surf.FlatColor.s.green = Surf.FlatColor.s.blue = 0x7F; // The nuke palette is kind of pink-ish
 		}
 		else
-			Surf.PolyColor.s.red = Surf.PolyColor.s.green = Surf.PolyColor.s.blue = 0xff;
+			Surf.FlatColor.s.red = Surf.FlatColor.s.green = Surf.FlatColor.s.blue = 0xff;
 
-		Surf.PolyColor.s.alpha = 0xc0; // match software mode
+		Surf.FlatColor.s.alpha = 0xc0; // match software mode
 
-		HWD.pfnDrawPolygon(&Surf, v, 4, PF_Modulated|PF_Additive|PF_NoTexture|PF_NoDepthTest);
+		HWD.pfnDrawPolygon(&Surf, v, 4, PF_Modulated|PF_Additive|PF_NoTexture|PF_NoDepthTest|PF_Clip|PF_NoZClip);
 	}
 
 	// Capture the screen for intermission and screen waving
 	if(gamestate != GS_INTERMISSION)
-		HWD.pfnMakeScreenTexture(HWD_SCREENTEXTURE_GENERIC1);
+		HWD.pfnMakeScreenTexture();
 
 	if (splitscreen) // Not supported in splitscreen - someone want to add support?
 		return;
 
+#ifdef SHUFFLE
 	// Drunken vision! WooOOooo~
 	if (*type == postimg_water || *type == postimg_heat)
 	{
 		// 10 by 10 grid. 2 coordinates (xy)
 		float v[SCREENVERTS][SCREENVERTS][2];
 		static double disStart = 0;
-
 		UINT8 x, y;
 		INT32 WAVELENGTH;
 		INT32 AMPLITUDE;
@@ -6871,15 +6766,15 @@ void HWR_DoPostProcessor(player_t *player)
 		// Modifies the wave.
 		if (*type == postimg_water)
 		{
-			WAVELENGTH = 5;
-			AMPLITUDE = 20;
-			FREQUENCY = 8;
+			WAVELENGTH = 20; // Lower is longer
+			AMPLITUDE = 20; // Lower is bigger
+			FREQUENCY = 16; // Lower is faster
 		}
 		else
 		{
-			WAVELENGTH = 10;
-			AMPLITUDE = 60;
-			FREQUENCY = 4;
+			WAVELENGTH = 10; // Lower is longer
+			AMPLITUDE = 30; // Lower is bigger
+			FREQUENCY = 4; // Lower is faster
 		}
 
 		for (x = 0; x < SCREENVERTS; x++)
@@ -6892,109 +6787,76 @@ void HWR_DoPostProcessor(player_t *player)
 			}
 		}
 		HWD.pfnPostImgRedraw(v);
-		if (!(paused || P_AutoPause()))
-			disStart += FIXED_TO_FLOAT(renderdeltatics);
+		disStart += 1;
 
 		// Capture the screen again for screen waving on the intermission
 		if(gamestate != GS_INTERMISSION)
-			HWD.pfnMakeScreenTexture(HWD_SCREENTEXTURE_GENERIC1);
+			HWD.pfnMakeScreenTexture();
 	}
 	// Flipping of the screen isn't done here anymore
+#endif // SHUFFLE
 }
 
 void HWR_StartScreenWipe(void)
 {
 	//CONS_Debug(DBG_RENDER, "In HWR_StartScreenWipe()\n");
-	HWD.pfnMakeScreenTexture(HWD_SCREENTEXTURE_WIPE_START);
+	HWD.pfnStartScreenWipe();
 }
 
 void HWR_EndScreenWipe(void)
 {
+	HWRWipeCounter = 0.0f;
 	//CONS_Debug(DBG_RENDER, "In HWR_EndScreenWipe()\n");
-	HWD.pfnMakeScreenTexture(HWD_SCREENTEXTURE_WIPE_END);
+	HWD.pfnEndScreenWipe();
 }
 
 void HWR_DrawIntermissionBG(void)
 {
-	HWD.pfnDrawScreenTexture(HWD_SCREENTEXTURE_GENERIC1, NULL, 0);
-}
-
-//
-// hwr mode wipes
-//
-static lumpnum_t wipelumpnum;
-
-// puts wipe lumpname in wipename[9]
-static boolean HWR_WipeCheck(UINT8 wipenum, UINT8 scrnnum)
-{
-	static char lumpname[9] = "FADEmmss";
-	size_t lsize;
-
-	// not a valid wipe number
-	if (wipenum > 99 || scrnnum > 99)
-		return false; // shouldn't end up here really, the loop should've stopped running beforehand
-
-	// puts the numbers into the wipename
-	lumpname[4] = '0'+(wipenum/10);
-	lumpname[5] = '0'+(wipenum%10);
-	lumpname[6] = '0'+(scrnnum/10);
-	lumpname[7] = '0'+(scrnnum%10);
-	wipelumpnum = W_CheckNumForName(lumpname);
-
-	// again, shouldn't be here really
-	if (wipelumpnum == LUMPERROR)
-		return false;
-
-	lsize = W_LumpLength(wipelumpnum);
-	if (!(lsize == 256000 || lsize == 64000 || lsize == 16000 || lsize == 4000))
-	{
-		CONS_Alert(CONS_WARNING, "Fade mask lump %s of incorrect size, ignored\n", lumpname);
-		return false; // again, shouldn't get here if it is a bad size
-	}
-
-	return true;
+	HWD.pfnDrawIntermissionBG();
 }
 
 void HWR_DoWipe(UINT8 wipenum, UINT8 scrnnum)
 {
-	if (!HWR_WipeCheck(wipenum, scrnnum))
+	static char lumpname[9] = "FADEmmss";
+	lumpnum_t lumpnum;
+	size_t lsize;
+
+	if (wipenum > 99 || scrnnum > 99) // not a valid wipe number
+		return; // shouldn't end up here really, the loop should've stopped running beforehand
+
+	// puts the numbers into the lumpname
+	sprintf(&lumpname[4], "%.2hu%.2hu", (UINT16)wipenum, (UINT16)scrnnum);
+	lumpnum = W_CheckNumForName(lumpname);
+
+	if (lumpnum == LUMPERROR) // again, shouldn't be here really
 		return;
 
-	HWR_GetFadeMask(wipelumpnum);
-	if (wipestyle == WIPESTYLE_COLORMAP && HWR_UseShader())
-	{
-		FSurfaceInfo surf = {0};
-		FBITFIELD polyflags = PF_Modulated|PF_NoDepthTest;
+	lsize = W_LumpLength(lumpnum);
 
-		polyflags |= (wipestyleflags & WSF_TOWHITE) ? PF_Additive : PF_ReverseSubtract;
-		surf.PolyColor.s.red = FADEREDFACTOR;
-		surf.PolyColor.s.green = FADEGREENFACTOR;
-		surf.PolyColor.s.blue = FADEBLUEFACTOR;
-		// polycolor alpha communicates fadein / fadeout to the shader and the backend
-		surf.PolyColor.s.alpha = (wipestyleflags & WSF_FADEIN) ? 255 : 0;
-
-		HWD.pfnSetShader(HWR_GetShaderFromTarget(SHADER_UI_TINTED_WIPE));
-		HWD.pfnDoScreenWipe(HWD_SCREENTEXTURE_WIPE_START, HWD_SCREENTEXTURE_WIPE_END,
-			&surf, polyflags);
-		HWD.pfnUnSetShader();
-	}
-	else
+	if (!(lsize == 256000 || lsize == 64000 || lsize == 16000 || lsize == 4000))
 	{
-		HWD.pfnDoScreenWipe(HWD_SCREENTEXTURE_WIPE_START, HWD_SCREENTEXTURE_WIPE_END,
-			NULL, 0);
+		CONS_Alert(CONS_WARNING, "Fade mask lump %s of incorrect size, ignored\n", lumpname);
+		return; // again, shouldn't get here if it is a bad size
 	}
+
+	HWR_GetFadeMask(lumpnum);
+
+	HWD.pfnDoScreenWipe(HWRWipeCounter); // Still send in wipecounter since old stuff might not support multitexturing
+
+	HWRWipeCounter += 0.05f; // increase opacity of end screen
+
+	if (HWRWipeCounter > 1.0f)
+		HWRWipeCounter = 1.0f;
 }
 
 void HWR_MakeScreenFinalTexture(void)
 {
-	int tex = HWR_ShouldUsePaletteRendering() ? HWD_SCREENTEXTURE_GENERIC3 : HWD_SCREENTEXTURE_GENERIC2;
-	HWD.pfnMakeScreenTexture(tex);
+    HWD.pfnMakeScreenFinalTexture();
 }
 
 void HWR_DrawScreenFinalTexture(int width, int height)
 {
-	int tex = HWR_ShouldUsePaletteRendering() ? HWD_SCREENTEXTURE_GENERIC3 : HWD_SCREENTEXTURE_GENERIC2;
-	HWD.pfnDrawScreenFinalTexture(tex, width, height);
+    HWD.pfnDrawScreenFinalTexture(width, height);
 }
 
 #endif // HWRENDER

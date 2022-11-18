@@ -1,25 +1,34 @@
-// SONIC ROBO BLAST 2
+// Emacs style mode select   -*- C++ -*-
 //-----------------------------------------------------------------------------
-// Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
 //
-// This program is free software distributed under the
-// terms of the GNU General Public License, version 2.
-// See the 'LICENSE' file for more details.
+// Copyright (C) 1998-2000 by DooM Legacy Team.
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; either version 2
+// of the License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
 //-----------------------------------------------------------------------------
-/// \file hw_data.h
-/// \brief defines structures and exports for the hardware interface used by Sonic Robo Blast 2
+/// \file
+/// \brief defines structures and exports for the standard 3D driver DLL used by Doom Legacy
 
 #ifndef _HWR_DATA_
 #define _HWR_DATA_
 
-#if defined (_WIN32) && !defined (__CYGWIN__)
+#if defined (_WIN32) && !defined (__CYGWIN__) && !defined (_XBOX)
 //#define WIN32_LEAN_AND_MEAN
 #define RPC_NO_WINDOWS_H
 #include <windows.h>
 #endif
 
 #include "../doomdef.h"
+//THIS MUST DISAPPEAR!!!
+#include "hw_glide.h"
 #include "../screen.h"
 
 
@@ -27,64 +36,54 @@
 //                                                               TEXTURE INFO
 // ==========================================================================
 
-typedef enum GLTextureFormat_e
-{
-	GL_TEXFMT_P_8                 = 0x01, /* 8-bit palette */
-	GL_TEXFMT_AP_88               = 0x02, /* 8-bit alpha, 8-bit palette */
-
-	GL_TEXFMT_RGBA                = 0x10, /* 32 bit RGBA! */
-
-	GL_TEXFMT_ALPHA_8             = 0x20, /* (0..0xFF) alpha     */
-	GL_TEXFMT_INTENSITY_8         = 0x21, /* (0..0xFF) intensity */
-	GL_TEXFMT_ALPHA_INTENSITY_88  = 0x22,
-} GLTextureFormat_t;
-
-// Colormap structure for mipmaps.
-struct GLColormap_s
-{
-	const UINT8 *source;
-	UINT8 data[256];
-};
-typedef struct GLColormap_s GLColormap_t;
-
-
-// Texture information (misleadingly named "mipmap" all over the code.)
-// The *data pointer holds the address of the graphics data cached in heap memory.
-// NULL if the texture is not in SRB2's heap cache.
+// grInfo.data holds the address of the graphics data cached in heap memory
+//                NULL if the texture is not in Doom heap cache.
 struct GLMipmap_s
 {
-	// for UpdateTexture
-	GLTextureFormat_t     format;
-	void                 *data;
-
-	UINT32                flags;
-	UINT16                height;
-	UINT16                width;
-	UINT32                downloaded; // The GPU has this texture.
+	GrTexInfo       grInfo;         //for TexDownloadMipMap
+	FxU32           flags;
+	UINT16          height;
+	UINT16          width;
+	UINT32          downloaded;     // the dll driver have it in there cache ?
 
 	struct GLMipmap_s    *nextcolormap;
-	struct GLColormap_s  *colormap;
+	const UINT8          *colormap;
+
+	// opengl
+	struct GLMipmap_s *nextmipmap; // opengl : liste of all texture in opengl driver
 };
 typedef struct GLMipmap_s GLMipmap_t;
 
 
 //
-// Level textures, as cached for hardware rendering.
+// Doom texture info, as cached for hardware rendering
 //
-struct GLMapTexture_s
+struct GLTexture_s
 {
 	GLMipmap_t  mipmap;
-	float       scaleX; // Used for scaling textures on walls
+	float       scaleX;             //used for scaling textures on walls
 	float       scaleY;
 };
-typedef struct GLMapTexture_s GLMapTexture_t;
+typedef struct GLTexture_s GLTexture_t;
 
 
-// Patch information for the hardware renderer.
+// a cached patch as converted to hardware format, holding the original patch_t
+// header so that the existing code can retrieve ->width, ->height as usual
+// This is returned by W_CachePatchNum()/W_CachePatchName(), when rendermode
+// is 'render_opengl'. Else it returns the normal patch_t data.
+
 struct GLPatch_s
 {
-	GLMipmap_t *mipmap; // Texture data. Allocated whenever the patch is.
-	float       max_s, max_t;
+	// the 4 first fields come right away from the original patch_t
+	INT16               width;
+	INT16               height;
+	INT16               leftoffset;     // pixels to the left of origin
+	INT16               topoffset;      // pixels below the origin
+	//
+	float               max_s,max_t;
+	UINT16              wadnum;      // the software patch lump num for when the hardware patch
+	UINT16              lumpnum;     // was flushed, and we need to re-create it
+	GLMipmap_t          mipmap;
 };
 typedef struct GLPatch_s GLPatch_t;
 

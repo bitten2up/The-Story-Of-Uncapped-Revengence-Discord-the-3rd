@@ -1,7 +1,7 @@
 // SONIC ROBO BLAST 2
 //-----------------------------------------------------------------------------
-// Copyright (C) 2012-2016 by Matthew "Kaito Sinclaire" Walsh.
-// Copyright (C) 2012-2022 by Sonic Team Junior.
+// Copyright (C) 2012-2016 by Matthew "Inuyasha" Walsh.
+// Copyright (C) 2012-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -66,45 +66,35 @@ typedef struct
 } conditionset_t;
 
 // Emblem information
-#define ET_GLOBAL 0 // Emblem with a position in space
-#define ET_SKIN   1 // Skin specific emblem with a position in space, var == skin
-#define ET_MAP    2 // Beat the map
-#define ET_SCORE  3 // Get the score
-#define ET_TIME   4 // Get the time
-#define ET_RINGS  5 // Get the rings
-#define ET_NGRADE 6 // Get the grade
-#define ET_NTIME  7 // Get the time (NiGHTS mode)
-
-// Global emblem flags
-#define GE_NIGHTSPULL 1 // sun off the nights track - loop it
-#define GE_NIGHTSITEM 2 // moon on the nights track - find it
-
-// Map emblem flags
-#define ME_ALLEMERALDS 1
-#define ME_ULTIMATE    2
-#define ME_PERFECT     4
+#define ET_GLOBAL 0 // Global map emblem, var == color
+#define ET_SKIN   1 // Skin specific emblem, var == skin
+#define ET_SCORE  2
+#define ET_TIME   3
+#define ET_RINGS  4
+#define ET_NGRADE 5
+#define ET_NTIME  6
 
 typedef struct
 {
 	UINT8 type;      ///< Emblem type
-	INT16 tag;       ///< Tag of emblem mapthing
+	INT16 x;         ///< X coordinate.
+	INT16 y;         ///< Y coordinate.
+	INT16 z;         ///< Z coordinate.
 	INT16 level;     ///< Level on which this emblem can be found.
 	UINT8 sprite;    ///< emblem sprite to use, 0 - 25
-	UINT16 color;    ///< skincolor to use
+	UINT8 color;     ///< skincolor to use
 	INT32 var;       ///< If needed, specifies information on the target amount to achieve (or target skin)
-	char *stringVar; ///< String version
 	char hint[110];  ///< Hint for emblem hints menu
 	UINT8 collected; ///< Do you have this emblem?
 } emblem_t;
 typedef struct
 {
-	char name[20];          ///< Name of the goal (used in the "emblem awarded" cecho)
-	char description[40];   ///< Description of goal (used in statistics)
-	UINT8 conditionset;     ///< Condition set that awards this emblem.
-	UINT8 showconditionset; ///< Condition set that shows this emblem.
-	UINT8 sprite;           ///< emblem sprite to use, 0 - 25
-	UINT16 color;           ///< skincolor to use
-	UINT8 collected;        ///< Do you have this emblem?
+	char name[20];       ///< Name of the goal (used in the "emblem awarded" cecho)
+	char description[40];///< Description of goal (used in statistics)
+	UINT8 conditionset;  ///< Condition set that awards this emblem.
+	UINT8 sprite;        ///< emblem sprite to use, 0 - 25
+	UINT8 color;         ///< skincolor to use
+	UINT8 collected;     ///< Do you have this emblem?
 } extraemblem_t;
 
 // Unlockable information
@@ -114,10 +104,8 @@ typedef struct
 	char objective[64];
 	UINT16 height; // menu height
 	UINT8 conditionset;
-	UINT8 showconditionset;
 	INT16 type;
 	INT16 variable;
-	char *stringVar;
 	UINT8 nocecho;
 	UINT8 nochecklist;
 	UINT8 unlocked;
@@ -134,7 +122,6 @@ typedef struct
 #define SECRET_WARP			 2 // Selectable warp
 #define SECRET_SOUNDTEST	 3 // Sound Test
 #define SECRET_CREDITS		 4 // Enables Credits
-#define SECRET_SKIN			 5 // Unlocks a skin
 
 // If you have more secrets than these variables allow in your game,
 // you seriously need to get a life.
@@ -153,7 +140,8 @@ extern INT32 numextraemblems;
 
 extern UINT32 unlocktriggers;
 
-// Condition set setup
+// Condition Set Setup
+void M_SetupDefaultConditionSets(void);
 void M_AddRawCondition(UINT8 set, UINT8 id, conditiontype_t c, INT32 r, INT16 x1, INT16 x2);
 
 // Clearing secrets
@@ -165,7 +153,6 @@ void M_CheckUnlockConditions(void);
 UINT8 M_UpdateUnlockablesAndExtraEmblems(void);
 void M_SilentUpdateUnlockablesAndEmblems(void);
 UINT8 M_CheckLevelEmblems(void);
-UINT8 M_CompletionEmblems(void);
 
 // Checking unlockable status
 UINT8 M_AnySecretUnlocked(void);
@@ -175,10 +162,10 @@ INT32 M_CountEmblems(void);
 
 // Emblem shit
 emblem_t *M_GetLevelEmblems(INT32 mapnum);
-skincolornum_t M_GetEmblemColor(emblem_t *em);
-const char *M_GetEmblemPatch(emblem_t *em, boolean big);
-skincolornum_t M_GetExtraEmblemColor(extraemblem_t *em);
-const char *M_GetExtraEmblemPatch(extraemblem_t *em, boolean big);
+skincolors_t M_GetEmblemColor(emblem_t *em);
+const char *M_GetEmblemPatch(emblem_t *em);
+skincolors_t M_GetExtraEmblemColor(extraemblem_t *em);
+const char *M_GetExtraEmblemPatch(extraemblem_t *em);
 
 // If you're looking to compare stats for unlocks or what not, use these
 // They stop checking upon reaching the target number so they
@@ -187,8 +174,5 @@ UINT8 M_GotEnoughEmblems(INT32 number);
 UINT8 M_GotHighEnoughScore(INT32 tscore);
 UINT8 M_GotLowEnoughTime(INT32 tictime);
 UINT8 M_GotHighEnoughRings(INT32 trings);
-
-INT32 M_UnlockableSkinNum(unlockable_t *unlock);
-INT32 M_EmblemSkinNum(emblem_t *emblem);
 
 #define M_Achieved(a) ((a) >= MAXCONDITIONSETS || conditionSets[a].achieved)

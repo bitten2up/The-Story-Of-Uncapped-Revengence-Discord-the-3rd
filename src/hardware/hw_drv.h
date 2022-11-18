@@ -1,13 +1,20 @@
-// SONIC ROBO BLAST 2
+// Emacs style mode select   -*- C++ -*-
 //-----------------------------------------------------------------------------
-// Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
 //
-// This program is free software distributed under the
-// terms of the GNU General Public License, version 2.
-// See the 'LICENSE' file for more details.
+// Copyright (C) 1998-2000 by DooM Legacy Team.
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; either version 2
+// of the License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
 //-----------------------------------------------------------------------------
-/// \file hw_drv.h
+/// \file
 /// \brief imports/exports for the 3D hardware low-level interface API
 
 #ifndef __HWR_DRV_H__
@@ -25,58 +32,50 @@
 //                                                       STANDARD DLL EXPORTS
 // ==========================================================================
 
-EXPORT boolean HWRAPI(Init) (void);
+EXPORT boolean HWRAPI(Init) (I_Error_t ErrorFunction);
 #ifndef HAVE_SDL
 EXPORT void HWRAPI(Shutdown) (void);
 #endif
 #ifdef _WINDOWS
 EXPORT void HWRAPI(GetModeList) (vmode_t **pvidmodes, INT32 *numvidmodes);
 #endif
-EXPORT void HWRAPI(SetTexturePalette) (RGBA_t *ppal);
+#if defined (PURESDL) || defined (macintosh)
+EXPORT void HWRAPI(SetPalette) (INT32 *, RGBA_t *gamma);
+#else
+EXPORT void HWRAPI(SetPalette) (RGBA_t *ppal, RGBA_t *pgamma);
+#endif
 EXPORT void HWRAPI(FinishUpdate) (INT32 waitvbl);
 EXPORT void HWRAPI(Draw2DLine) (F2DCoord *v1, F2DCoord *v2, RGBA_t Color);
 EXPORT void HWRAPI(DrawPolygon) (FSurfaceInfo *pSurf, FOutVector *pOutVerts, FUINT iNumPts, FBITFIELD PolyFlags);
-EXPORT void HWRAPI(DrawIndexedTriangles) (FSurfaceInfo *pSurf, FOutVector *pOutVerts, FUINT iNumPts, FBITFIELD PolyFlags, UINT32 *IndexArray);
-EXPORT void HWRAPI(RenderSkyDome) (gl_sky_t *sky);
 EXPORT void HWRAPI(SetBlend) (FBITFIELD PolyFlags);
 EXPORT void HWRAPI(ClearBuffer) (FBOOLEAN ColorMask, FBOOLEAN DepthMask, FRGBAFloat *ClearColor);
-EXPORT void HWRAPI(SetTexture) (GLMipmap_t *TexInfo);
-EXPORT void HWRAPI(UpdateTexture) (GLMipmap_t *TexInfo);
-EXPORT void HWRAPI(DeleteTexture) (GLMipmap_t *TexInfo);
-EXPORT void HWRAPI(ReadScreenTexture) (int tex, UINT8 *dst_data);
+EXPORT void HWRAPI(SetTexture) (FTextureInfo *TexInfo);
+EXPORT void HWRAPI(ReadRect) (INT32 x, INT32 y, INT32 width, INT32 height, INT32 dst_stride, UINT16 *dst_data);
 EXPORT void HWRAPI(GClipRect) (INT32 minx, INT32 miny, INT32 maxx, INT32 maxy, float nearclip);
 EXPORT void HWRAPI(ClearMipMapCache) (void);
 
+//Hurdler: added for backward compatibility
 EXPORT void HWRAPI(SetSpecialState) (hwdspecialstate_t IdState, INT32 Value);
 
-//EXPORT void HWRAPI(DrawModel) (model_t *model, INT32 frameIndex, INT32 duration, INT32 tics, INT32 nextFrameIndex, FTransform *pos, float scale, UINT8 flipped, UINT8 hflipped, FSurfaceInfo *Surface);
-EXPORT void HWRAPI(DrawModel) (model_t *model, INT32 frameIndex, float duration, float tics, INT32 nextFrameIndex, FTransform *pos, float scale, UINT8 flipped, UINT8 hflipped, FSurfaceInfo *Surface);
-EXPORT void HWRAPI(CreateModelVBOs) (model_t *model);
+//Hurdler: added for new development
+EXPORT void HWRAPI(DrawMD2) (INT32 *gl_cmd_buffer, md2_frame_t *frame, FTransform *pos, float scale);
+EXPORT void HWRAPI(DrawMD2i) (INT32 *gl_cmd_buffer, md2_frame_t *frame, INT32 duration, INT32 tics, md2_frame_t *nextframe, FTransform *pos, float scale, UINT8 flipped, UINT8 *color);
 EXPORT void HWRAPI(SetTransform) (FTransform *ptransform);
 EXPORT INT32 HWRAPI(GetTextureUsed) (void);
+EXPORT INT32 HWRAPI(GetRenderVersion) (void);
 
-EXPORT void HWRAPI(FlushScreenTextures) (void);
-EXPORT void HWRAPI(DoScreenWipe) (int wipeStart, int wipeEnd, FSurfaceInfo *surf, FBITFIELD polyFlags);
-EXPORT void HWRAPI(DrawScreenTexture) (int tex, FSurfaceInfo *surf, FBITFIELD polyflags);
-EXPORT void HWRAPI(MakeScreenTexture) (int tex);
-EXPORT void HWRAPI(DrawScreenFinalTexture) (int tex, int width, int height);
-
+#ifdef SHUFFLE
 #define SCREENVERTS 10
 EXPORT void HWRAPI(PostImgRedraw) (float points[SCREENVERTS][SCREENVERTS][2]);
-
-EXPORT boolean HWRAPI(InitShaders) (void);
-EXPORT void HWRAPI(LoadShader) (int slot, char *code, hwdshaderstage_t stage);
-EXPORT boolean HWRAPI(CompileShader) (int slot);
-EXPORT void HWRAPI(SetShader) (int slot);
-EXPORT void HWRAPI(UnSetShader) (void);
-
-EXPORT void HWRAPI(SetShaderInfo) (hwdshaderinfo_t info, INT32 value);
-
-EXPORT void HWRAPI(SetPaletteLookup)(UINT8 *lut);
-EXPORT UINT32 HWRAPI(CreateLightTable)(RGBA_t *hw_lighttable);
-EXPORT void HWRAPI(ClearLightTables)(void);
-EXPORT void HWRAPI(SetScreenPalette)(RGBA_t *palette);
-
+#endif
+EXPORT void HWRAPI(FlushScreenTextures) (void);
+EXPORT void HWRAPI(StartScreenWipe) (void);
+EXPORT void HWRAPI(EndScreenWipe) (void);
+EXPORT void HWRAPI(DoScreenWipe) (float alpha);
+EXPORT void HWRAPI(DrawIntermissionBG) (void);
+EXPORT void HWRAPI(MakeScreenTexture) (void);
+EXPORT void HWRAPI(MakeScreenFinalTexture) (void);
+EXPORT void HWRAPI(DrawScreenFinalTexture) (int width, int height);
 // ==========================================================================
 //                                      HWR DRIVER OBJECT, FOR CLIENT PROGRAM
 // ==========================================================================
@@ -86,53 +85,45 @@ EXPORT void HWRAPI(SetScreenPalette)(RGBA_t *palette);
 struct hwdriver_s
 {
 	Init                pfnInit;
-	SetTexturePalette   pfnSetTexturePalette;
+	SetPalette          pfnSetPalette;
 	FinishUpdate        pfnFinishUpdate;
 	Draw2DLine          pfnDraw2DLine;
 	DrawPolygon         pfnDrawPolygon;
-	DrawIndexedTriangles    pfnDrawIndexedTriangles;
-	RenderSkyDome       pfnRenderSkyDome;
 	SetBlend            pfnSetBlend;
 	ClearBuffer         pfnClearBuffer;
 	SetTexture          pfnSetTexture;
-	UpdateTexture       pfnUpdateTexture;
-	DeleteTexture       pfnDeleteTexture;
-	ReadScreenTexture   pfnReadScreenTexture;
+	ReadRect            pfnReadRect;
 	GClipRect           pfnGClipRect;
 	ClearMipMapCache    pfnClearMipMapCache;
-	SetSpecialState     pfnSetSpecialState;
-	DrawModel           pfnDrawModel;
-	CreateModelVBOs     pfnCreateModelVBOs;
+	SetSpecialState     pfnSetSpecialState;//Hurdler: added for backward compatibility
+	DrawMD2             pfnDrawMD2;
+	DrawMD2i            pfnDrawMD2i;
 	SetTransform        pfnSetTransform;
 	GetTextureUsed      pfnGetTextureUsed;
+	GetRenderVersion    pfnGetRenderVersion;
 #ifdef _WINDOWS
 	GetModeList         pfnGetModeList;
 #endif
 #ifndef HAVE_SDL
 	Shutdown            pfnShutdown;
 #endif
+#ifdef SHUFFLE
 	PostImgRedraw       pfnPostImgRedraw;
+#endif
 	FlushScreenTextures pfnFlushScreenTextures;
+	StartScreenWipe     pfnStartScreenWipe;
+	EndScreenWipe       pfnEndScreenWipe;
 	DoScreenWipe        pfnDoScreenWipe;
-	DrawScreenTexture   pfnDrawScreenTexture;
+	DrawIntermissionBG  pfnDrawIntermissionBG;
 	MakeScreenTexture   pfnMakeScreenTexture;
+	MakeScreenFinalTexture  pfnMakeScreenFinalTexture;
 	DrawScreenFinalTexture  pfnDrawScreenFinalTexture;
-
-	InitShaders         pfnInitShaders;
-	LoadShader          pfnLoadShader;
-	CompileShader       pfnCompileShader;
-	SetShader           pfnSetShader;
-	UnSetShader         pfnUnSetShader;
-
-	SetShaderInfo       pfnSetShaderInfo;
-
-	SetPaletteLookup    pfnSetPaletteLookup;
-	CreateLightTable    pfnCreateLightTable;
-	ClearLightTables    pfnClearLightTables;
-	SetScreenPalette    pfnSetScreenPalette;
 };
 
 extern struct hwdriver_s hwdriver;
+
+//Hurdler: 16/10/99: added for OpenGL gamma correction
+//extern RGBA_t  gamma_correction;
 
 #define HWD hwdriver
 

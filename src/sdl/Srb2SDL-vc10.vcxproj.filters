@@ -135,16 +135,6 @@
     <ClInclude Include="..\dehacked.h">
       <Filter>D_Doom</Filter>
     </ClInclude>
-    <ClInclude Include="..\deh_lua.h">
-      <Filter>D_Doom</Filter>
-    </ClInclude>
-    <ClInclude Include="..\deh_soc.h">
-      <Filter>D_Doom</Filter>
-    </ClInclude>
-    <ClInclude Include="..\deh_tables.h">
-      <Filter>D_Doom</Filter>
-    </ClInclude>
-
     <ClInclude Include="..\doomdata.h">
       <Filter>D_Doom</Filter>
     </ClInclude>
@@ -190,9 +180,6 @@
     <ClInclude Include="..\f_finale.h">
       <Filter>F_Frame</Filter>
     </ClInclude>
-    <ClInclude Include="..\g_demo.h">
-      <Filter>G_Game</Filter>
-    </ClInclude>
     <ClInclude Include="..\g_game.h">
       <Filter>G_Game</Filter>
     </ClInclude>
@@ -229,9 +216,6 @@
     <ClInclude Include="..\hardware\hws_data.h">
       <Filter>Hw_Hardware</Filter>
     </ClInclude>
-    <ClInclude Include="..\hardware\hw_batching.h">
-      <Filter>Hw_Hardware</Filter>
-    </ClInclude>
     <ClInclude Include="..\hardware\hw_clip.h">
       <Filter>Hw_Hardware</Filter>
     </ClInclude>
@@ -247,6 +231,9 @@
     <ClInclude Include="..\hardware\hw_drv.h">
       <Filter>Hw_Hardware</Filter>
     </ClInclude>
+    <ClInclude Include="..\hardware\hw_glide.h">
+      <Filter>Hw_Hardware</Filter>
+    </ClInclude>
     <ClInclude Include="..\hardware\hw_glob.h">
       <Filter>Hw_Hardware</Filter>
     </ClInclude>
@@ -257,18 +244,6 @@
       <Filter>Hw_Hardware</Filter>
     </ClInclude>
     <ClInclude Include="..\hardware\hw_md2.h">
-      <Filter>Hw_Hardware</Filter>
-    </ClInclude>
-    <ClInclude Include="..\hardware\hw_md2load.h">
-      <Filter>Hw_Hardware</Filter>
-    </ClInclude>
-    <ClInclude Include="..\hardware\hw_md3load.h">
-      <Filter>Hw_Hardware</Filter>
-    </ClInclude>
-    <ClInclude Include="..\hardware\hw_model.h">
-      <Filter>Hw_Hardware</Filter>
-    </ClInclude>
-    <ClInclude Include="..\hardware\u_list.h">
       <Filter>Hw_Hardware</Filter>
     </ClInclude>
     <ClInclude Include="..\byteptr.h">
@@ -298,9 +273,6 @@
     <ClInclude Include="..\i_tcp.h">
       <Filter>I_Interface</Filter>
     </ClInclude>
-    <ClInclude Include="..\i_threads.h">
-      <Filter>I_Interface</Filter>
-    </ClInclude>
     <ClInclude Include="..\i_video.h">
       <Filter>I_Interface</Filter>
     </ClInclude>
@@ -308,9 +280,6 @@
       <Filter>I_Interface</Filter>
     </ClInclude>
     <ClInclude Include="..\mserv.h">
-      <Filter>I_Interface</Filter>
-    </ClInclude>
-    <ClInclude Include="..\http-mserv.h">
       <Filter>I_Interface</Filter>
     </ClInclude>
     <ClInclude Include="..\lua_hook.h">
@@ -359,9 +328,6 @@
       <Filter>M_Misc</Filter>
     </ClInclude>
     <ClInclude Include="..\m_misc.h">
-      <Filter>M_Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="..\m_perfstats.h">
       <Filter>M_Misc</Filter>
     </ClInclude>
     <ClInclude Include="..\m_queue.h">
@@ -415,12 +381,6 @@
     <ClInclude Include="..\tables.h">
       <Filter>P_Play</Filter>
     </ClInclude>
-    <ClInclude Include="..\taglist.h">
-      <Filter>P_Play</Filter>
-    </ClInclude>
-    <ClInclude Include="..\libdivide.h">
-      <Filter>R_Rend</Filter>
-    </ClInclude>
     <ClInclude Include="..\r_bsp.h">
       <Filter>R_Rend</Filter>
     </ClInclude>
@@ -443,9 +403,6 @@
       <Filter>R_Rend</Filter>
     </ClInclude>
     <ClInclude Include="..\r_segs.h">
-      <Filter>R_Rend</Filter>
-    </ClInclude>
-    <ClInclude Include="..\r_skins.h">
       <Filter>R_Rend</Filter>
     </ClInclude>
     <ClInclude Include="..\r_sky.h">
@@ -492,24 +449,6 @@
     </ClInclude>
     <ClInclude Include="sdlmain.h">
       <Filter>SDLApp</Filter>
-    </ClInclude>
-    <ClInclude Include="..\hardware\hw_clip.h">
-      <Filter>Hw_Hardware</Filter>
-    </ClInclude>
-    <ClInclude Include="..\r_patch.h">
-      <Filter>R_Rend</Filter>
-    </ClInclude>
-    <ClInclude Include="..\r_patchrotation.h">
-      <Filter>R_Rend</Filter>
-    </ClInclude>
-    <ClInclude Include="..\r_picformats.h">
-      <Filter>R_Rend</Filter>
-    </ClInclude>
-    <ClInclude Include="..\r_textures.h">
-      <Filter>R_Rend</Filter>
-    </ClInclude>
-    <ClInclude Include="..\r_portal.h">
-      <Filter>R_Rend</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -568,9 +507,6 @@
     <ClCompile Include="..\blua\linit.c">
       <Filter>BLUA</Filter>
     </ClCompile>
-    <ClCompile Include="..\blua\liolib.c">
-      <Filter>BLUA</Filter>
-    </ClCompile>
     <ClCompile Include="..\blua\llex.c">
       <Filter>BLUA</Filter>
     </ClCompile>
@@ -616,16 +552,6 @@
     <ClCompile Include="..\dehacked.c">
       <Filter>D_Doom</Filter>
     </ClCompile>
-    <ClCompile Include="..\deh_lua.c">
-      <Filter>D_Doom</Filter>
-    </ClCompile>
-    <ClCompile Include="..\deh_soc.c">
-      <Filter>D_Doom</Filter>
-    </ClCompile>
-    <ClCompile Include="..\deh_tables.c">
-      <Filter>D_Doom</Filter>
-    </ClCompile>
-
     <ClCompile Include="..\d_clisrv.c">
       <Filter>D_Doom</Filter>
     </ClCompile>
@@ -649,9 +575,6 @@
     </ClCompile>
     <ClCompile Include="..\f_wipe.c">
       <Filter>F_Frame</Filter>
-    </ClCompile>
-    <ClCompile Include="..\g_demo.c">
-      <Filter>G_Game</Filter>
     </ClCompile>
     <ClCompile Include="..\g_game.c">
       <Filter>G_Game</Filter>
@@ -680,9 +603,6 @@
     <ClCompile Include="..\hardware\hw3sound.c">
       <Filter>Hw_Hardware</Filter>
     </ClCompile>
-    <ClCompile Include="..\hardware\hw_batching.c">
-      <Filter>Hw_Hardware</Filter>
-    </ClCompile>
     <ClCompile Include="..\hardware\hw_bsp.c">
       <Filter>Hw_Hardware</Filter>
     </ClCompile>
@@ -704,19 +624,7 @@
     <ClCompile Include="..\hardware\hw_md2.c">
       <Filter>Hw_Hardware</Filter>
     </ClCompile>
-    <ClCompile Include="..\hardware\hw_md2load.c">
-      <Filter>Hw_Hardware</Filter>
-    </ClCompile>
-    <ClCompile Include="..\hardware\hw_md3load.c">
-      <Filter>Hw_Hardware</Filter>
-    </ClCompile>
-    <ClCompile Include="..\hardware\hw_model.c">
-      <Filter>Hw_Hardware</Filter>
-    </ClCompile>
-    <ClCompile Include="..\hardware\hw_shaders.c">
-      <Filter>Hw_Hardware</Filter>
-    </ClCompile>
-    <ClCompile Include="..\hardware\u_list.c">
+    <ClCompile Include="..\hardware\hw_trick.c">
       <Filter>Hw_Hardware</Filter>
     </ClCompile>
     <ClCompile Include="..\filesrch.c">
@@ -729,9 +637,6 @@
       <Filter>I_Interface</Filter>
     </ClCompile>
     <ClCompile Include="..\mserv.c">
-      <Filter>I_Interface</Filter>
-    </ClCompile>
-    <ClCompile Include="..\http-mserv.c">
       <Filter>I_Interface</Filter>
     </ClCompile>
     <ClCompile Include="..\lua_baselib.c">
@@ -752,9 +657,6 @@
     <ClCompile Include="..\lua_infolib.c">
       <Filter>LUA</Filter>
     </ClCompile>
-    <ClCompile Include="..\lua_inputlib.c">
-      <Filter>LUA</Filter>
-    </ClCompile>
     <ClCompile Include="..\lua_maplib.c">
       <Filter>LUA</Filter>
     </ClCompile>
@@ -767,16 +669,10 @@
     <ClCompile Include="..\lua_playerlib.c">
       <Filter>LUA</Filter>
     </ClCompile>
-    <ClCompile Include="..\lua_polyobjlib.c">
-      <Filter>LUA</Filter>
-    </ClCompile>
     <ClCompile Include="..\lua_script.c">
       <Filter>LUA</Filter>
     </ClCompile>
     <ClCompile Include="..\lua_skinlib.c">
-      <Filter>LUA</Filter>
-    </ClCompile>
-    <ClCompile Include="..\lua_taglib.c">
       <Filter>LUA</Filter>
     </ClCompile>
     <ClCompile Include="..\lua_thinkerlib.c">
@@ -812,9 +708,6 @@
     <ClCompile Include="..\m_misc.c">
       <Filter>M_Misc</Filter>
     </ClCompile>
-    <ClCompile Include="..\m_perfstats.c">
-      <Filter>M_Misc</Filter>
-    </ClCompile>
     <ClCompile Include="..\m_queue.c">
       <Filter>M_Misc</Filter>
     </ClCompile>
@@ -822,9 +715,6 @@
       <Filter>M_Misc</Filter>
     </ClCompile>
     <ClCompile Include="..\string.c">
-      <Filter>M_Misc</Filter>
-    </ClCompile>
-    <ClCompile Include="..\strcasestr.c">
       <Filter>M_Misc</Filter>
     </ClCompile>
     <ClCompile Include="..\comptime.c">
@@ -887,9 +777,6 @@
     <ClCompile Include="..\tables.c">
       <Filter>P_Play</Filter>
     </ClCompile>
-    <ClCompile Include="..\taglist.c">
-      <Filter>P_Play</Filter>
-    </ClCompile>
     <ClCompile Include="..\t_facon.c">
       <Filter>P_Play</Filter>
     </ClCompile>
@@ -917,9 +804,6 @@
     <ClCompile Include="..\r_draw8.c">
       <Filter>R_Rend</Filter>
     </ClCompile>
-    <ClCompile Include="..\r_draw8_npo2.c">
-      <Filter>R_Rend</Filter>
-    </ClCompile>
     <ClCompile Include="..\r_main.c">
       <Filter>R_Rend</Filter>
     </ClCompile>
@@ -927,9 +811,6 @@
       <Filter>R_Rend</Filter>
     </ClCompile>
     <ClCompile Include="..\r_segs.c">
-      <Filter>R_Rend</Filter>
-    </ClCompile>
-    <ClCompile Include="..\r_skins.c">
       <Filter>R_Rend</Filter>
     </ClCompile>
     <ClCompile Include="..\r_sky.c">
@@ -1006,25 +887,6 @@
     </ClCompile>
     <ClCompile Include="SDL_main\SDL_windows_main.c">
       <Filter>SDLApp</Filter>
-    </ClCompile>
-    <ClCompile Include="..\hardware\hw_clip.c">
-      <Filter>Hw_Hardware</Filter>
-    </ClCompile>
-    <ClCompile Include="..\apng.c" />
-    <ClCompile Include="..\r_patch.c">
-      <Filter>R_Rend</Filter>
-    </ClCompile>
-    <ClCompile Include="..\r_patchrotation.c">
-      <Filter>R_Rend</Filter>
-    </ClCompile>
-    <ClCompile Include="..\r_picformats.c">
-      <Filter>R_Rend</Filter>
-    </ClCompile>
-    <ClCompile Include="..\r_textures.c">
-      <Filter>R_Rend</Filter>
-    </ClCompile>
-    <ClCompile Include="..\r_portal.c">
-      <Filter>R_Rend</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

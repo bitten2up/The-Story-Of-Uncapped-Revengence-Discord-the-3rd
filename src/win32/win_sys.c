@@ -45,7 +45,6 @@
 #include "../d_main.h"
 
 #include "../m_argv.h"
-#include "../m_fixed.h"
 
 #include "../w_wad.h"
 #include "../z_zone.h"
@@ -54,8 +53,6 @@
 #include "../keys.h"
 
 #include "../screen.h"
-
-#include "../m_menu.h"
 
 // Wheel support for Win95/WinNT3.51
 #include <zmouse.h>
@@ -262,11 +259,6 @@ tic_t I_GetTime(void)
 	return newtics;
 }
 
-fixed_t I_GetTimeFrac(void)
-{
-	return 0;
-}
-
 void I_Sleep(void)
 {
 	if (cv_sleep.value != -1)
@@ -328,20 +320,20 @@ static inline VOID I_GetConsoleEvents(VOID)
 					{
 						case VK_ESCAPE:
 						case VK_TAB:
-							ev.key = KEY_NULL;
+							ev.data1 = KEY_NULL;
 							break;
 						case VK_SHIFT:
-							ev.key = KEY_LSHIFT;
+							ev.data1 = KEY_LSHIFT;
 							break;
 						case VK_RETURN:
 							entering_con_command = false;
-							/* FALLTHRU */
+							// Fall through.
 						default:
-							ev.key = MapVirtualKey(input.Event.KeyEvent.wVirtualKeyCode,2); // convert in to char
+							ev.data1 = MapVirtualKey(input.Event.KeyEvent.wVirtualKeyCode,2); // convert in to char
 					}
 					if (co != INVALID_HANDLE_VALUE && GetFileType(co) == FILE_TYPE_CHAR && GetConsoleMode(co, &t))
 					{
-						if (ev.key && ev.key != KEY_LSHIFT && ev.key != KEY_RSHIFT)
+						if (ev.data1 && ev.data1 != KEY_LSHIFT && ev.data1 != KEY_RSHIFT)
 						{
 #ifdef UNICODE
 							WriteConsole(co, &input.Event.KeyEvent.uChar.UnicodeChar, 1, &t, NULL);
@@ -362,13 +354,13 @@ static inline VOID I_GetConsoleEvents(VOID)
 					switch (input.Event.KeyEvent.wVirtualKeyCode)
 					{
 						case VK_SHIFT:
-							ev.key = KEY_LSHIFT;
+							ev.data1 = KEY_LSHIFT;
 							break;
 						default:
 							break;
 					}
 				}
-				if (ev.key) D_PostEvent(&ev);
+				if (ev.data1) D_PostEvent(&ev);
 				break;
 			case MOUSE_EVENT:
 			case WINDOW_BUFFER_SIZE_EVENT:
@@ -473,7 +465,6 @@ static void signal_handler(int num)
 	char sigdef[64];
 
 	D_QuitNetGame(); // Fix server freezes
-	CL_AbortDownloadResume();
 	I_ShutdownSystem();
 
 	switch (num)
@@ -488,7 +479,7 @@ static void signal_handler(int num)
 			sigmsg = "floating point exception";
 			break;
 		case SIGSEGV:
-			sigmsg = "segment violation"; //sev
+			sigmsg = "segment violation";
 			break;
 		case SIGTERM:
 			sigmsg = "software termination signal from kill";
@@ -656,15 +647,9 @@ void I_Error(const char *error, ...)
 	if (demorecording)
 		G_CheckDemoStatus();
 	if (metalrecording)
-		G_StopMetalRecording(false);
+		G_StopMetalRecording();
 
 	D_QuitNetGame();
-	CL_AbortDownloadResume();
-	M_FreePlayerSetupColors();
-	
-#ifdef HAVE_DISCORDRPC
-	DRPC_ShutDown();
-#endif
 
 	// shutdown everything that was started
 	I_ShutdownSystem();
@@ -748,7 +733,7 @@ void I_Quit(void)
 	if (demorecording)
 		G_CheckDemoStatus();
 	if (metalrecording)
-		G_StopMetalRecording(false);
+		G_StopMetalRecording();
 
 	M_SaveConfig(NULL); // save game config, cvars..
 #ifndef NONET
@@ -760,13 +745,6 @@ void I_Quit(void)
 	// or something else that will be finished by I_ShutdownSystem(),
 	// so do it before.
 	D_QuitNetGame();
-	CL_AbortDownloadResume();
-
-	M_FreePlayerSetupColors();
-
-#ifdef HAVE_DISCORDRPC
-	DRPC_ShutDown();
-#endif
 
 	// shutdown everything that was started
 	I_ShutdownSystem();
@@ -959,7 +937,7 @@ static void I_ShutdownMouse2(VOID)
 		for (i = 0; i < MOUSEBUTTONS; i++)
 		{
 			event.type = ev_keyup;
-			event.key = KEY_2MOUSE1 + i;
+			event.data1 = KEY_2MOUSE1 + i;
 			D_PostEvent(&event);
 		}
 
@@ -1149,14 +1127,14 @@ VOID I_GetSysMouseEvents(INT mouse_state)
 		if ((mouse_state & (1 << i)) && !(old_mouse_state & (1 << i)))
 		{
 			event.type = ev_keydown;
-			event.key = KEY_MOUSE1 + i;
+			event.data1 = KEY_MOUSE1 + i;
 			D_PostEvent(&event);
 		}
 		// check if button released
 		if (!(mouse_state & (1 << i)) && (old_mouse_state & (1 << i)))
 		{
 			event.type = ev_keyup;
-			event.key = KEY_MOUSE1 + i;
+			event.data1 = KEY_MOUSE1 + i;
 			D_PostEvent(&event);
 		}
 	}
@@ -1170,9 +1148,9 @@ VOID I_GetSysMouseEvents(INT mouse_state)
 	if (xmickeys || ymickeys)
 	{
 		event.type  = ev_mouse;
-		event.key = 0;
-		event.x = xmickeys;
-		event.y = -ymickeys;
+		event.data1 = 0;
+		event.data2 = xmickeys;
+		event.data3 = -ymickeys;
 		D_PostEvent(&event);
 		SetCursorPos(center_x, center_y);
 	}
@@ -1254,7 +1232,7 @@ static void I_ShutdownMouse(void)
 	for (i = 0; i < MOUSEBUTTONS; i++)
 	{
 		event.type = ev_keyup;
-		event.key = KEY_MOUSE1 + i;
+		event.data1 = KEY_MOUSE1 + i;
 		D_PostEvent(&event);
 	}
 	if (nodinput)
@@ -1295,7 +1273,7 @@ void I_GetMouseEvents(void)
 						event.type = ev_keydown;
 					else
 						event.type = ev_keyup;
-					event.key = KEY_2MOUSE1 + i;
+					event.data1 = KEY_2MOUSE1 + i;
 					D_PostEvent(&event);
 				}
 		}
@@ -1303,9 +1281,9 @@ void I_GetMouseEvents(void)
 		if (handlermouse2x || handlermouse2y)
 		{
 			event.type = ev_mouse2;
-			event.key = 0;
-			event.x = handlermouse2x<<1;
-			event.y = -handlermouse2y<<1;
+			event.data1 = 0;
+			event.data2 = handlermouse2x<<1;
+			event.data3 = -handlermouse2y<<1;
 			handlermouse2x = 0;
 			handlermouse2y = 0;
 
@@ -1344,7 +1322,7 @@ getBufferedData:
 				else
 					event.type = ev_keyup; // Button up
 
-				event.key = rgdod[d].dwOfs - DIMOFS_BUTTON0 + KEY_MOUSE1;
+				event.data1 = rgdod[d].dwOfs - DIMOFS_BUTTON0 + KEY_MOUSE1;
 				D_PostEvent(&event);
 			}
 			else if (rgdod[d].dwOfs == DIMOFS_X)
@@ -1356,9 +1334,9 @@ getBufferedData:
 			{
 				// z-axes the wheel
 				if ((int)rgdod[d].dwData > 0)
-					event.key = KEY_MOUSEWHEELUP;
+					event.data1 = KEY_MOUSEWHEELUP;
 				else
-					event.key = KEY_MOUSEWHEELDOWN;
+					event.data1 = KEY_MOUSEWHEELDOWN;
 				event.type = ev_keydown;
 				D_PostEvent(&event);
 			}
@@ -1368,15 +1346,13 @@ getBufferedData:
 		if (xmickeys || ymickeys)
 		{
 			event.type = ev_mouse;
-			event.key = 0;
-			event.x = xmickeys;
-			event.y = -ymickeys;
+			event.data1 = 0;
+			event.data2 = xmickeys;
+			event.data3 = -ymickeys;
 			D_PostEvent(&event);
 		}
 	}
 }
-
-void I_UpdateMouseGrab(void) {}
 
 // ===========================================================================================
 //                                                                       DIRECT INPUT JOYSTICK
@@ -2409,14 +2385,14 @@ static VOID I_ShutdownJoystick(VOID)
 	// emulate the up of all joystick buttons
 	for (i = 0;i < JOYBUTTONS;i++)
 	{
-		event.key = KEY_JOY1+i;
+		event.data1 = KEY_JOY1+i;
 		D_PostEvent(&event);
 	}
 
 	// emulate the up of all joystick hats
 	for (i = 0;i < JOYHATS*4;i++)
 	{
-		event.key = KEY_HAT1+i;
+		event.data1 = KEY_HAT1+i;
 		D_PostEvent(&event);
 	}
 
@@ -2424,7 +2400,7 @@ static VOID I_ShutdownJoystick(VOID)
 	event.type = ev_joystick;
 	for (i = 0;i < JOYAXISSET; i++)
 	{
-		event.key = i;
+		event.data1 = i;
 		D_PostEvent(&event);
 	}
 
@@ -2474,14 +2450,14 @@ static VOID I_ShutdownJoystick2(VOID)
 	// emulate the up of all joystick buttons
 	for (i = 0;i < JOYBUTTONS;i++)
 	{
-		event.key = KEY_2JOY1+i;
+		event.data1 = KEY_2JOY1+i;
 		D_PostEvent(&event);
 	}
 
 	// emulate the up of all joystick hats
 	for (i = 0;i < JOYHATS*4;i++)
 	{
-		event.key = KEY_2HAT1+i;
+		event.data1 = KEY_2HAT1+i;
 		D_PostEvent(&event);
 	}
 
@@ -2489,7 +2465,7 @@ static VOID I_ShutdownJoystick2(VOID)
 	event.type = ev_joystick2;
 	for (i = 0;i < JOYAXISSET; i++)
 	{
-		event.key = i;
+		event.data1 = i;
 		D_PostEvent(&event);
 	}
 
@@ -2612,7 +2588,7 @@ acquire:
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.key = KEY_JOY1 + i;
+				event.data1 = KEY_JOY1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -2632,7 +2608,7 @@ acquire:
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.key = KEY_HAT1 + i;
+				event.data1 = KEY_HAT1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -2641,7 +2617,7 @@ acquire:
 
 	// send joystick axis positions
 	event.type = ev_joystick;
-	event.key = event.x = event.y = 0;
+	event.data1 = event.data2 = event.data3 = 0;
 
 	if (Joystick.bGamepadStyle)
 	{
@@ -2649,29 +2625,29 @@ acquire:
 		if (JoyInfo.X)
 		{
 			if (js.lX < -(JOYAXISRANGE/2))
-				event.x = -1;
+				event.data2 = -1;
 			else if (js.lX > JOYAXISRANGE/2)
-				event.x = 1;
+				event.data2 = 1;
 		}
 		if (JoyInfo.Y)
 		{
 			if (js.lY < -(JOYAXISRANGE/2))
-				event.y = -1;
+				event.data3 = -1;
 			else if (js.lY > JOYAXISRANGE/2)
-				event.y = 1;
+				event.data3 = 1;
 		}
 	}
 	else
 	{
 		// analog control style, just send the raw data
-		if (JoyInfo.X)  event.x = js.lX; // x axis
-		if (JoyInfo.Y)  event.y = js.lY; // y axis
+		if (JoyInfo.X)  event.data2 = js.lX; // x axis
+		if (JoyInfo.Y)  event.data3 = js.lY; // y axis
 	}
 
 	D_PostEvent(&event);
 #if JOYAXISSET > 1
-	event.key = 1;
-	event.x = event.y = 0;
+	event.data1 = 1;
+	event.data2 = event.data3 = 0;
 
 	if (Joystick.bGamepadStyle)
 	{
@@ -2679,30 +2655,30 @@ acquire:
 		if (JoyInfo.Z)
 		{
 			if (js.lZ < -(JOYAXISRANGE/2))
-				event.x = -1;
+				event.data2 = -1;
 			else if (js.lZ > JOYAXISRANGE/2)
-				event.x = 1;
+				event.data2 = 1;
 		}
 		if (JoyInfo.Rx)
 		{
 			if (js.lRx < -(JOYAXISRANGE/2))
-				event.y = -1;
+				event.data3 = -1;
 			else if (js.lRx > JOYAXISRANGE/2)
-				event.y = 1;
+				event.data3 = 1;
 		}
 	}
 	else
 	{
 		// analog control style, just send the raw data
-		if (JoyInfo.Z)  event.x = js.lZ;  // z axis
-		if (JoyInfo.Rx) event.y = js.lRx; // rx axis
+		if (JoyInfo.Z)  event.data2 = js.lZ;  // z axis
+		if (JoyInfo.Rx) event.data3 = js.lRx; // rx axis
 	}
 
 	D_PostEvent(&event);
 #endif
 #if JOYAXISSET > 2
-	event.key = 2;
-	event.x = event.y = 0;
+	event.data1 = 2;
+	event.data2 = event.data3 = 0;
 
 	if (Joystick.bGamepadStyle)
 	{
@@ -2710,53 +2686,53 @@ acquire:
 		if (JoyInfo.Rx)
 		{
 			if (js.lRy < -(JOYAXISRANGE/2))
-				event.x = -1;
+				event.data2 = -1;
 			else if (js.lRy > JOYAXISRANGE/2)
-				event.x = 1;
+				event.data2 = 1;
 		}
 		if (JoyInfo.Rz)
 		{
 			if (js.lRz < -(JOYAXISRANGE/2))
-				event.y = -1;
+				event.data3 = -1;
 			else if (js.lRz > JOYAXISRANGE/2)
-				event.y = 1;
+				event.data3 = 1;
 		}
 	}
 	else
 	{
 		// analog control style, just send the raw data
-		if (JoyInfo.Ry) event.x = js.lRy; // ry axis
-		if (JoyInfo.Rz) event.y = js.lRz; // rz axis
+		if (JoyInfo.Ry) event.data2 = js.lRy; // ry axis
+		if (JoyInfo.Rz) event.data3 = js.lRz; // rz axis
 	}
 
 	D_PostEvent(&event);
 #endif
 #if JOYAXISSET > 3
-	event.key = 3;
-	event.x = event.y = 0;
+	event.data1 = 3;
+	event.data2 = event.data3 = 0;
 	if (Joystick.bGamepadStyle)
 	{
 		// gamepad control type, on or off, live or die
 		if (JoyInfo.U)
 		{
 			if (js.rglSlider[0] < -(JOYAXISRANGE/2))
-				event.x = -1;
+				event.data2 = -1;
 			else if (js.rglSlider[0] > JOYAXISRANGE/2)
-				event.x = 1;
+				event.data2 = 1;
 		}
 		if (JoyInfo.V)
 		{
 			if (js.rglSlider[1] < -(JOYAXISRANGE/2))
-				event.y = -1;
+				event.data3 = -1;
 			else if (js.rglSlider[1] > JOYAXISRANGE/2)
-				event.y = 1;
+				event.data3 = 1;
 		}
 	}
 	else
 	{
 		// analog control style, just send the raw data
-		if (JoyInfo.U)  event.x = js.rglSlider[0]; // U axis
-		if (JoyInfo.V)  event.y = js.rglSlider[1]; // V axis
+		if (JoyInfo.U)  event.data2 = js.rglSlider[0]; // U axis
+		if (JoyInfo.V)  event.data3 = js.rglSlider[1]; // V axis
 	}
 	D_PostEvent(&event);
 #endif
@@ -2856,7 +2832,7 @@ acquire:
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.key = KEY_2JOY1 + i;
+				event.data1 = KEY_2JOY1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -2876,7 +2852,7 @@ acquire:
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.key = KEY_2HAT1 + i;
+				event.data1 = KEY_2HAT1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -2885,7 +2861,7 @@ acquire:
 
 	// send joystick axis positions
 	event.type = ev_joystick2;
-	event.key = event.x = event.y = 0;
+	event.data1 = event.data2 = event.data3 = 0;
 
 	if (Joystick2.bGamepadStyle)
 	{
@@ -2893,29 +2869,29 @@ acquire:
 		if (JoyInfo2.X)
 		{
 			if (js.lX < -(JOYAXISRANGE/2))
-				event.x = -1;
+				event.data2 = -1;
 			else if (js.lX > JOYAXISRANGE/2)
-				event.x = 1;
+				event.data2 = 1;
 		}
 		if (JoyInfo2.Y)
 		{
 			if (js.lY < -(JOYAXISRANGE/2))
-				event.y = -1;
+				event.data3 = -1;
 			else if (js.lY > JOYAXISRANGE/2)
-				event.y = 1;
+				event.data3 = 1;
 		}
 	}
 	else
 	{
 		// analog control style, just send the raw data
-		if (JoyInfo2.X)  event.x = js.lX; // x axis
-		if (JoyInfo2.Y)  event.y = js.lY; // y axis
+		if (JoyInfo2.X)  event.data2 = js.lX; // x axis
+		if (JoyInfo2.Y)  event.data3 = js.lY; // y axis
 	}
 
 	D_PostEvent(&event);
 #if JOYAXISSET > 1
-	event.key = 1;
-	event.x = event.y = 0;
+	event.data1 = 1;
+	event.data2 = event.data3 = 0;
 
 	if (Joystick2.bGamepadStyle)
 	{
@@ -2923,30 +2899,30 @@ acquire:
 		if (JoyInfo2.Z)
 		{
 			if (js.lZ < -(JOYAXISRANGE/2))
-				event.x = -1;
+				event.data2 = -1;
 			else if (js.lZ > JOYAXISRANGE/2)
-				event.x = 1;
+				event.data2 = 1;
 		}
 		if (JoyInfo2.Rx)
 		{
 			if (js.lRx < -(JOYAXISRANGE/2))
-				event.y = -1;
+				event.data3 = -1;
 			else if (js.lRx > JOYAXISRANGE/2)
-				event.y = 1;
+				event.data3 = 1;
 		}
 	}
 	else
 	{
 		// analog control style, just send the raw data
-		if (JoyInfo2.Z)  event.x = js.lZ;  // z axis
-		if (JoyInfo2.Rx) event.y = js.lRx; // rx axis
+		if (JoyInfo2.Z)  event.data2 = js.lZ;  // z axis
+		if (JoyInfo2.Rx) event.data3 = js.lRx; // rx axis
 	}
 
 	D_PostEvent(&event);
 #endif
 #if JOYAXISSET > 2
-	event.key = 2;
-	event.x = event.y = 0;
+	event.data1 = 2;
+	event.data2 = event.data3 = 0;
 
 	if (Joystick2.bGamepadStyle)
 	{
@@ -2954,53 +2930,53 @@ acquire:
 		if (JoyInfo2.Rx)
 		{
 			if (js.lRy < -(JOYAXISRANGE/2))
-				event.x = -1;
+				event.data2 = -1;
 			else if (js.lRy > JOYAXISRANGE/2)
-				event.x = 1;
+				event.data2 = 1;
 		}
 		if (JoyInfo2.Rz)
 		{
 			if (js.lRz < -(JOYAXISRANGE/2))
-				event.y = -1;
+				event.data3 = -1;
 			else if (js.lRz > JOYAXISRANGE/2)
-				event.y = 1;
+				event.data3 = 1;
 		}
 	}
 	else
 	{
 		// analog control style, just send the raw data
-		if (JoyInfo2.Ry) event.x = js.lRy; // ry axis
-		if (JoyInfo2.Rz) event.y = js.lRz; // rz axis
+		if (JoyInfo2.Ry) event.data2 = js.lRy; // ry axis
+		if (JoyInfo2.Rz) event.data3 = js.lRz; // rz axis
 	}
 
 	D_PostEvent(&event);
 #endif
 #if JOYAXISSET > 3
-	event.key = 3;
-	event.x = event.y = 0;
+	event.data1 = 3;
+	event.data2 = event.data3 = 0;
 	if (Joystick2.bGamepadStyle)
 	{
 		// gamepad control type, on or off, live or die
 		if (JoyInfo2.U)
 		{
 			if (js.rglSlider[0] < -(JOYAXISRANGE/2))
-				event.x = -1;
+				event.data2 = -1;
 			else if (js.rglSlider[0] > JOYAXISRANGE/2)
-				event.x = 1;
+				event.data2 = 1;
 		}
 		if (JoyInfo2.V)
 		{
 			if (js.rglSlider[1] < -(JOYAXISRANGE/2))
-				event.y = -1;
+				event.data3 = -1;
 			else if (js.rglSlider[1] > JOYAXISRANGE/2)
-				event.y = 1;
+				event.data3 = 1;
 		}
 	}
 	else
 	{
 		// analog control style, just send the raw data
-		if (JoyInfo2.U)  event.x = js.rglSlider[0]; // U axis
-		if (JoyInfo2.V)  event.y = js.rglSlider[1]; // V axis
+		if (JoyInfo2.U)  event.data2 = js.rglSlider[0]; // U axis
+		if (JoyInfo2.V)  event.data3 = js.rglSlider[1]; // V axis
 	}
 	D_PostEvent(&event);
 #endif
@@ -3208,7 +3184,7 @@ INT32 I_GetKey(void)
 		ev = &events[eventtail];
 		eventtail = (eventtail+1) & (MAXEVENTS-1);
 		if (ev->type == ev_keydown || ev->type == ev_console)
-			return ev->key;
+			return ev->data1;
 		else
 			return 0;
 	}
@@ -3221,7 +3197,7 @@ INT32 I_GetKey(void)
 // -----------------
 #define DI_KEYBOARD_BUFFERSIZE 32 // number of data elements in keyboard buffer
 
-static void I_StartupKeyboard(void)
+void I_StartupKeyboard(void)
 {
 	DIPROPDWORD dip;
 
@@ -3322,7 +3298,7 @@ static VOID I_GetKeyboardEvents(VOID)
 	if (!appActive && RepeatKeyCode) // Stop when lost focus
 	{
 		event.type = ev_keyup;
-		event.key = RepeatKeyCode;
+		event.data1 = RepeatKeyCode;
 		D_PostEvent(&event);
 		RepeatKeyCode = 0;
 	}
@@ -3377,9 +3353,9 @@ getBufferedData:
 
 			ch = rgdod[d].dwOfs & 0xFF;
 			if (ASCIINames[ch])
-				event.key = ASCIINames[ch];
+				event.data1 = ASCIINames[ch];
 			else
-				event.key = 0x80;
+				event.data1 = 0x80;
 
 			D_PostEvent(&event);
 		}
@@ -3392,7 +3368,7 @@ getBufferedData:
 			// delay is tripled for first repeating key
 			RepeatKeyTics = hacktics + (KEY_REPEAT_DELAY*3);
 			if (event.type == ev_keydown) // use the last event!
-				RepeatKeyCode = event.key;
+				RepeatKeyCode = event.data1;
 		}
 		else
 		{
@@ -3400,7 +3376,7 @@ getBufferedData:
 			if (RepeatKeyCode && hacktics - RepeatKeyTics > KEY_REPEAT_DELAY)
 			{
 				event.type = ev_keydown;
-				event.key = RepeatKeyCode;
+				event.data1 = RepeatKeyCode;
 				D_PostEvent(&event);
 
 				RepeatKeyTics = hacktics;
@@ -3456,8 +3432,6 @@ INT32 I_StartupSystem(void)
 
 	// some 'more global than globals' things to initialize here ?
 	graphics_started = keyboard_started = sound_started = cdaudio_started = false;
-
-	I_StartupKeyboard();
 
 #ifdef NDEBUG
 
@@ -3672,7 +3646,7 @@ const CPUInfoFlags *I_CPUInfo(void)
 }
 
 static void CPUAffinity_OnChange(void);
-static consvar_t cv_cpuaffinity = CVAR_INIT ("cpuaffinity", "-1", CV_CALL, NULL, CPUAffinity_OnChange);
+static consvar_t cv_cpuaffinity = {"cpuaffinity", "-1", CV_CALL, NULL, CPUAffinity_OnChange, 0, NULL, NULL, 0, 0, NULL};
 
 typedef HANDLE (WINAPI *p_GetCurrentProcess) (VOID);
 static p_GetCurrentProcess pfnGetCurrentProcess = NULL;

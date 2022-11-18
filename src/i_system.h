@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
+// Copyright (C) 1999-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -42,37 +42,15 @@ extern UINT8 keyboard_started;
 */
 UINT32 I_GetFreeMem(UINT32 *total);
 
-/**	\brief  Called by D_SRB2Loop, returns current time in game tics.
+/**	\brief  Called by D_SRB2Loop, returns current time in tics.
 */
 tic_t I_GetTime(void);
 
-/** \brief  Get the current time in game tics, including fractions.
-*/
-float I_GetTimeFrac(void);
-
-/**	\brief	Returns precise time value for performance measurement.
-  */
-precise_t I_GetPreciseTime(void);
-
-/**	\brief	Converts a precise_t to microseconds and casts it to a 32 bit integer.
-  */
-int I_PreciseToMicros(precise_t d);
-
-/** \brief  Get the current time in rendering tics, including fractions.
-*/
-double I_GetFrameTime(void);
-
-/**	\brief	Sleeps by the value of cv_sleep
+/**	\brief	The I_Sleep function
 
 	\return	void
 */
 void I_Sleep(void);
-
-/**	\brief	Sleeps for a variable amount of time, depending on how much time the last frame took.
-
-	\return	void
-*/
-boolean I_FrameCapSleep(const double frameStart);
 
 /**	\brief Get events
 
@@ -206,6 +184,10 @@ void I_StartupMouse(void);
 */
 void I_StartupMouse2(void);
 
+/**	\brief keyboard startup, shutdown, handler
+*/
+void I_StartupKeyboard(void);
+
 /**	\brief  setup timer irq and user timer routine.
 */
 void I_StartupTimer(void);
@@ -232,18 +214,10 @@ void I_RemoveExitFunc(void (*func)());
 
 /**	\brief Setup signal handler, plus stuff for trapping errors and cleanly exit.
 */
-
 INT32 I_StartupSystem(void);
 
 /**	\brief Shutdown systems
 */
-
-#ifdef HAVE_DISCORDRPC
-void DRPC_ShutDown(void);
-/**	\brief Shutdown All Discord Rich Presence Things
-*/
-#endif
-
 void I_ShutdownSystem(void);
 
 /**	\brief	The I_GetDiskFreeSpace function
@@ -318,10 +292,6 @@ void I_GetJoystick2Events(void);
 */
 void I_GetMouseEvents(void);
 
-/**	\brief Checks if the mouse needs to be grabbed
-*/
-void I_UpdateMouseGrab(void);
-
 char *I_GetEnv(const char *name);
 
 INT32 I_PutEnv(char *variable);
@@ -335,13 +305,5 @@ INT32 I_ClipboardCopy(const char *data, size_t size);
 const char *I_ClipboardPaste(void);
 
 void I_RegisterSysCommands(void);
-
-/** \brief Return the position of the cursor relative to the top-left window corner.
-*/
-void I_GetCursorPosition(INT32 *x, INT32 *y);
-
-/** \brief Sets whether the mouse is grabbed
-*/
-void I_SetMouseGrab(boolean grab);
 
 #endif

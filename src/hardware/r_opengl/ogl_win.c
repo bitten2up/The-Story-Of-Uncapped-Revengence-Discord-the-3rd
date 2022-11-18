@@ -206,7 +206,7 @@ int SetupPixelFormat(INT32 WantColorBits, INT32 WantStencilBits, INT32 WantDepth
 
 	if (iLastPFD)
 	{
-		GL_DBG_Printf("WARNING : SetPixelFormat() called twise not supported by all drivers !\n");
+		DBG_Printf("WARNING : SetPixelFormat() called twise not supported by all drivers !\n");
 	}
 
 	// set the pixel format only if different than the current
@@ -215,17 +215,17 @@ int SetupPixelFormat(INT32 WantColorBits, INT32 WantStencilBits, INT32 WantDepth
 	else
 		iLastPFD = iPFD;
 
-	GL_DBG_Printf("SetupPixelFormat() - %d ColorBits - %d StencilBits - %d DepthBits\n",
+	DBG_Printf("SetupPixelFormat() - %d ColorBits - %d StencilBits - %d DepthBits\n",
 	           WantColorBits, WantStencilBits, WantDepthBits);
 
 	nPixelFormat = ChoosePixelFormat(hDC, &pfd);
 
 	if (nPixelFormat == 0)
-		GL_DBG_Printf("ChoosePixelFormat() FAILED\n");
+		DBG_Printf("ChoosePixelFormat() FAILED\n");
 
 	if (SetPixelFormat(hDC, nPixelFormat, &pfd) == 0)
 	{
-		GL_DBG_Printf("SetPixelFormat() FAILED\n");
+		DBG_Printf("SetPixelFormat() FAILED\n");
 		return 0;
 	}
 
@@ -243,7 +243,7 @@ static INT32 WINAPI SetRes(viddef_t *lvid, vmode_t *pcurrentmode)
 	BOOL WantFullScreen = !(lvid->u.windowed);  //(lvid->u.windowed ? 0 : CDS_FULLSCREEN);
 
 	UNREFERENCED_PARAMETER(pcurrentmode);
-	GL_DBG_Printf ("SetMode(): %dx%d %d bits (%s)\n",
+	DBG_Printf ("SetMode(): %dx%d %d bits (%s)\n",
 	            lvid->width, lvid->height, lvid->bpp*8,
 	            WantFullScreen ? "fullscreen" : "windowed");
 
@@ -301,7 +301,7 @@ static INT32 WINAPI SetRes(viddef_t *lvid, vmode_t *pcurrentmode)
 		hDC = GetDC(hWnd);
 	if (!hDC)
 	{
-		GL_DBG_Printf("GetDC() FAILED\n");
+		DBG_Printf("GetDC() FAILED\n");
 		return 0;
 	}
 
@@ -321,12 +321,12 @@ static INT32 WINAPI SetRes(viddef_t *lvid, vmode_t *pcurrentmode)
 			hGLRC = pwglCreateContext(hDC);
 			if (!hGLRC)
 			{
-				GL_DBG_Printf("pwglCreateContext() FAILED\n");
+				DBG_Printf("pwglCreateContext() FAILED\n");
 				return 0;
 			}
 			if (!pwglMakeCurrent(hDC, hGLRC))
 			{
-				GL_DBG_Printf("wglMakeCurrent() FAILED\n");
+				DBG_Printf("wglMakeCurrent() FAILED\n");
 				return 0;
 			}
 		}
@@ -337,15 +337,22 @@ static INT32 WINAPI SetRes(viddef_t *lvid, vmode_t *pcurrentmode)
 	//BP: why don't we make it earlier ?
 	//Hurdler: we cannot do that before intialising gl context
 	renderer = (LPCSTR)pglGetString(GL_RENDERER);
-	GL_DBG_Printf("Vendor     : %s\n", pglGetString(GL_VENDOR));
-	GL_DBG_Printf("Renderer   : %s\n", renderer);
-	GL_DBG_Printf("Version    : %s\n", pglGetString(GL_VERSION));
-	GL_DBG_Printf("Extensions : %s\n", gl_extensions);
+	DBG_Printf("Vendor     : %s\n", pglGetString(GL_VENDOR));
+	DBG_Printf("Renderer   : %s\n", renderer);
+	DBG_Printf("Version    : %s\n", pglGetString(GL_VERSION));
+	DBG_Printf("Extensions : %s\n", gl_extensions);
 
 	// BP: disable advenced feature that don't work on somes hardware
 	// Hurdler: Now works on G400 with bios 1.6 and certified drivers 6.04
 	if (strstr(renderer, "810"))   oglflags |= GLF_NOZBUFREAD;
-	GL_DBG_Printf("oglflags   : 0x%X\n", oglflags);
+	DBG_Printf("oglflags   : 0x%X\n", oglflags);
+
+#ifdef USE_PALETTED_TEXTURE
+	if (isExtAvailable("GL_EXT_paletted_texture",gl_extensions))
+		glColorTableEXT = GetGLFunc("glColorTableEXT");
+	else
+		glColorTableEXT = NULL;
+#endif
 
 #ifdef USE_WGL_SWAP
 	if (isExtAvailable("WGL_EXT_swap_control",gl_extensions))
@@ -386,7 +393,7 @@ static INT32 WINAPI SetRes(viddef_t *lvid, vmode_t *pcurrentmode)
 // -----------------+
 static void UnSetRes(void)
 {
-	GL_DBG_Printf("UnSetRes()\n");
+	DBG_Printf("UnSetRes()\n");
 
 	pwglMakeCurrent(hDC, NULL);
 	pwglDeleteContext(hGLRC);
@@ -437,7 +444,7 @@ EXPORT void HWRAPI(GetModeList) (vmode_t** pvidmodes, INT32 *numvidmodes)
 			video_modes[iMode].misc = 0;
 			video_modes[iMode].name = malloc(12 * sizeof (CHAR));
 			sprintf(video_modes[iMode].name, "%dx%d", (INT32)Tmp.dmPelsWidth, (INT32)Tmp.dmPelsHeight);
-			GL_DBG_Printf ("Mode: %s\n", video_modes[iMode].name);
+			DBG_Printf ("Mode: %s\n", video_modes[iMode].name);
 			video_modes[iMode].width = Tmp.dmPelsWidth;
 			video_modes[iMode].height = Tmp.dmPelsHeight;
 			video_modes[iMode].bytesperpixel = Tmp.dmBitsPerPel/8;
@@ -474,7 +481,7 @@ EXPORT void HWRAPI(GetModeList) (vmode_t** pvidmodes, INT32 *numvidmodes)
 	HDC bpphdc;
 	INT32 iBitsPerPel;
 
-	GL_DBG_Printf ("HWRAPI GetModeList()\n");
+	DBG_Printf ("HWRAPI GetModeList()\n");
 
 	bpphdc = GetDC(NULL); // on obtient le bpp actuel
 	iBitsPerPel = GetDeviceCaps(bpphdc, BITSPIXEL);
@@ -490,7 +497,7 @@ EXPORT void HWRAPI(GetModeList) (vmode_t** pvidmodes, INT32 *numvidmodes)
 		video_modes[i].misc = 0;
 		video_modes[i].name = malloc(12 * sizeof (CHAR));
 		sprintf(video_modes[i].name, "%dx%d", res[i][0], res[i][1]);
-		GL_DBG_Printf ("Mode: %s\n", video_modes[i].name);
+		DBG_Printf ("Mode: %s\n", video_modes[i].name);
 		video_modes[i].width = res[i][0];
 		video_modes[i].height = res[i][1];
 		video_modes[i].bytesperpixel = iBitsPerPel/8;
@@ -511,9 +518,9 @@ EXPORT void HWRAPI(Shutdown) (void)
 #ifdef DEBUG_TO_FILE
 	long nb_centiemes;
 
-	GL_DBG_Printf ("HWRAPI Shutdown()\n");
+	DBG_Printf ("HWRAPI Shutdown()\n");
 	nb_centiemes = ((clock()-my_clock)*100)/CLOCKS_PER_SEC;
-	GL_DBG_Printf("Nb frames: %li;  Nb sec: %2.2f  ->  %2.1f fps\n",
+	DBG_Printf("Nb frames: %li;  Nb sec: %2.2f  ->  %2.1f fps\n",
 					nb_frames, nb_centiemes/100.0f, (100*nb_frames)/(double)nb_centiemes);
 #endif
 
@@ -530,7 +537,7 @@ EXPORT void HWRAPI(Shutdown) (void)
 	}
 	FreeLibrary(GLU32);
 	FreeLibrary(OGL32);
-	GL_DBG_Printf ("HWRAPI Shutdown(DONE)\n");
+	DBG_Printf ("HWRAPI Shutdown(DONE)\n");
 }
 
 // -----------------+
@@ -543,7 +550,7 @@ EXPORT void HWRAPI(FinishUpdate) (INT32 waitvbl)
 #else
 	UNREFERENCED_PARAMETER(waitvbl);
 #endif
-	// GL_DBG_Printf ("FinishUpdate()\n");
+	// DBG_Printf ("FinishUpdate()\n");
 #ifdef DEBUG_TO_FILE
 	if ((++nb_frames)==2)  // on ne commence pas � la premi�re frame
 		my_clock = clock();
@@ -564,15 +571,31 @@ EXPORT void HWRAPI(FinishUpdate) (INT32 waitvbl)
 //                  : in OpenGL, we store values for conversion of paletted graphics when
 //                  : they are downloaded to the 3D card.
 // -----------------+
-EXPORT void HWRAPI(SetPalette) (RGBA_t *pal)
+EXPORT void HWRAPI(SetPalette) (RGBA_t *pal, RGBA_t *gamma)
 {
-	size_t palsize = (sizeof(RGBA_t) * 256);
-	// on a palette change, you have to reload all of the textures
-	if (memcmp(&myPaletteData, pal, palsize))
+	INT32 i;
+
+	for (i = 0; i < 256; i++)
 	{
-		memcpy(&myPaletteData, pal, palsize);
-		Flush();
+		myPaletteData[i].s.red   = (UINT8)MIN((pal[i].s.red*gamma->s.red)/127,     255);
+		myPaletteData[i].s.green = (UINT8)MIN((pal[i].s.green*gamma->s.green)/127, 255);
+		myPaletteData[i].s.blue  = (UINT8)MIN((pal[i].s.blue*gamma->s.blue)/127,   255);
+		myPaletteData[i].s.alpha = pal[i].s.alpha;
 	}
+#ifdef USE_PALETTED_TEXTURE
+	if (glColorTableEXT)
+	{
+		for (i = 0; i < 256; i++)
+		{
+			palette_tex[3*i+0] = pal[i].s.red;
+			palette_tex[3*i+1] = pal[i].s.green;
+			palette_tex[3*i+2] = pal[i].s.blue;
+		}
+		glColorTableEXT(GL_TEXTURE_2D, GL_RGB8, 256, GL_RGB, GL_UNSIGNED_BYTE, palette_tex);
+	}
+#endif
+	// on a chang� de palette, il faut recharger toutes les textures
+	Flush();
 }
 
 #endif

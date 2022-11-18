@@ -42,7 +42,7 @@
 #include "fabdxlib.h"
 #include "win_main.h"
 #include "win_dbg.h"
-#include "../s_sound.h" // pause sound with handling
+#include "../i_sound.h" // midi pause/unpause
 #include "../g_input.h" // KEY_MOUSEWHEELxxx
 #include "../screen.h" // for BASEVID*
 
@@ -110,9 +110,9 @@ static LRESULT CALLBACK MainWndproc(HWND hWnd, UINT message, WPARAM wParam, LPAR
 
 			// pause music when alt-tab
 			if (appActive  && !paused)
-				S_ResumeAudio();
+				I_ResumeSong();
 			else if (!paused)
-				S_PauseAudio();
+				I_PauseSong();
 			{
 				HANDLE ci = GetStdHandle(STD_INPUT_HANDLE);
 				DWORD mode;
@@ -188,11 +188,11 @@ static LRESULT CALLBACK MainWndproc(HWND hWnd, UINT message, WPARAM wParam, LPAR
 			ev.type = ev_keydown;
 
 	handleKeyDoom:
-			ev.key = 0;
+			ev.data1 = 0;
 			if (wParam == VK_PAUSE)
 			// intercept PAUSE key
 			{
-				ev.key = KEY_PAUSE;
+				ev.data1 = KEY_PAUSE;
 			}
 			else if (!keyboard_started)
 			// post some keys during the game startup
@@ -201,14 +201,14 @@ static LRESULT CALLBACK MainWndproc(HWND hWnd, UINT message, WPARAM wParam, LPAR
 			{
 				switch (wParam)
 				{
-					case VK_ESCAPE: ev.key = KEY_ESCAPE;  break;
-					case VK_RETURN: ev.key = KEY_ENTER;   break;
-					case VK_SHIFT:  ev.key = KEY_LSHIFT;  break;
-					default: ev.key = MapVirtualKey((DWORD)wParam,2); // convert in to char
+					case VK_ESCAPE: ev.data1 = KEY_ESCAPE;  break;
+					case VK_RETURN: ev.data1 = KEY_ENTER;   break;
+					case VK_SHIFT:  ev.data1 = KEY_LSHIFT;  break;
+					default: ev.data1 = MapVirtualKey((DWORD)wParam,2); // convert in to char
 				}
 			}
 
-			if (ev.key)
+			if (ev.data1)
 				D_PostEvent (&ev);
 
 			return 0;
@@ -240,7 +240,7 @@ static LRESULT CALLBACK MainWndproc(HWND hWnd, UINT message, WPARAM wParam, LPAR
 			if (nodinput)
 			{
 				ev.type = ev_keyup;
-				ev.key = KEY_MOUSE1 + 3 + HIWORD(wParam);
+				ev.data1 = KEY_MOUSE1 + 3 + HIWORD(wParam);
 				D_PostEvent(&ev);
 				return TRUE;
 			}
@@ -249,7 +249,7 @@ static LRESULT CALLBACK MainWndproc(HWND hWnd, UINT message, WPARAM wParam, LPAR
 			if (nodinput)
 			{
 				ev.type = ev_keydown;
-				ev.key = KEY_MOUSE1 + 3 + HIWORD(wParam);
+				ev.data1 = KEY_MOUSE1 + 3 + HIWORD(wParam);
 				D_PostEvent(&ev);
 				return TRUE;
 			}
@@ -258,9 +258,9 @@ static LRESULT CALLBACK MainWndproc(HWND hWnd, UINT message, WPARAM wParam, LPAR
 			//I_OutputMsg("MW_WHEEL dispatched.\n");
 			ev.type = ev_keydown;
 			if ((INT16)HIWORD(wParam) > 0)
-				ev.key = KEY_MOUSEWHEELUP;
+				ev.data1 = KEY_MOUSEWHEELUP;
 			else
-				ev.key = KEY_MOUSEWHEELDOWN;
+				ev.data1 = KEY_MOUSEWHEELDOWN;
 			D_PostEvent(&ev);
 			break;
 
@@ -271,7 +271,7 @@ static LRESULT CALLBACK MainWndproc(HWND hWnd, UINT message, WPARAM wParam, LPAR
 
 		case WM_CLOSE:
 			PostQuitMessage(0);         //to quit while in-game
-			ev.key = KEY_ESCAPE;      //to exit network synchronization
+			ev.data1 = KEY_ESCAPE;      //to exit network synchronization
 			ev.type = ev_keydown;
 			D_PostEvent (&ev);
 			return 0;
@@ -643,28 +643,37 @@ int WINAPI WinMain (HINSTANCE hInstance,
                     int       nCmdShow)
 {
 	int Result = -1;
+
+#if 0
+	// Win95 and NT <4 don't have this, so link at runtime.
+	p_IsDebuggerPresent pfnIsDebuggerPresent = (p_IsDebuggerPresent)GetProcAddress(GetModuleHandleA("kernel32.dll"),"IsDebuggerPresent");
+#endif
+
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
 	UNREFERENCED_PARAMETER(nCmdShow);
 
-	{
 #if 0
-		p_IsDebuggerPresent pfnIsDebuggerPresent = (p_IsDebuggerPresent)GetProcAddress(GetModuleHandleA("kernel32.dll"),"IsDebuggerPresent");
-		if((!pfnIsDebuggerPresent || !pfnIsDebuggerPresent())
 #ifdef BUGTRAP
-			&& !InitBugTrap()
+	// Try BugTrap first.
+	if((!pfnIsDebuggerPresent || !pfnIsDebuggerPresent()) && InitBugTrap())
+		Result = HandledWinMain(hInstance);
+	else
+	{
 #endif
-		)
+		// Try Dr MinGW's exception handler.
+		if (!pfnIsDebuggerPresent || !pfnIsDebuggerPresent())
 #endif
-		{
 			LoadLibraryA("exchndl.dll");
-		}
-	}
+
 #ifndef __MINGW32__
-	prevExceptionFilter = SetUnhandledExceptionFilter(RecordExceptionInfo);
+		prevExceptionFilter = SetUnhandledExceptionFilter(RecordExceptionInfo);
 #endif
-	Result = HandledWinMain(hInstance);
+
+		Result = HandledWinMain(hInstance);
 #ifdef BUGTRAP
+	}	// BT failure clause.
+
 	// This is safe even if BT didn't start.
 	ShutdownBugTrap();
 #endif

@@ -18,15 +18,11 @@ matrix:
         - os: linux
           addons:
             apt:
-              sources:
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - gcc-4.4
           compiler: gcc-4.4
@@ -36,15 +32,11 @@ matrix:
         - os: linux
           addons:
             apt:
-              sources:
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - gcc-4.6
           compiler: gcc-4.6
@@ -54,15 +46,11 @@ matrix:
         - os: linux
           addons:
             apt:
-              sources:
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - gcc-4.7
           compiler: gcc-4.7
@@ -79,14 +67,11 @@ matrix:
             apt:
               sources:
               - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - gcc-4.8
           compiler: gcc-4.8
@@ -98,14 +83,11 @@ matrix:
             apt:
               sources:
               - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - gcc-7
           compiler: gcc-7
@@ -117,14 +99,11 @@ matrix:
             apt:
               sources:
               - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - gcc-8
           compiler: gcc-8
@@ -140,14 +119,11 @@ matrix:
             apt:
               sources:
               - llvm-toolchain-precise-3.5
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - clang-3.5
           compiler: clang-3.5
@@ -159,14 +135,11 @@ matrix:
               sources:
               - llvm-toolchain-precise-3.6
               - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - clang-3.6
           compiler: clang-3.6
@@ -178,14 +151,11 @@ matrix:
               sources:
               - llvm-toolchain-precise-3.7
               - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - clang-3.7
           compiler: clang-3.7
@@ -197,14 +167,11 @@ matrix:
               sources:
               - llvm-toolchain-precise-3.8
               - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - clang-3.8
           compiler: clang-3.8
@@ -216,14 +183,11 @@ matrix:
               sources:
               - llvm-toolchain-precise-3.9
               - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - clang-3.9
           compiler: clang-3.9
@@ -235,13 +199,11 @@ matrix:
 #              sources:
 #              - llvm-toolchain-precise-4.0
 #              - ubuntu-toolchain-r-test
-#              - sourceline: 'ppa:stjr/srb2'
 #              packages:
 #              - libsdl2-mixer-dev
 #              - libpng-dev
 #              - libgl1-mesa-dev
 #              - libgme-dev
-#              - libopenmpt-dev
 #              - p7zip-full
 #              - clang-4.0
 #          compiler: clang-4.0
@@ -253,13 +215,11 @@ matrix:
 #              sources:
 #              - llvm-toolchain-precise-5.0
 #              - ubuntu-toolchain-r-test
-#              - sourceline: 'ppa:stjr/srb2'
 #              packages:
 #              - libsdl2-mixer-dev
 #              - libpng-dev
 #              - libgl1-mesa-dev
 #              - libgme-dev
-#              - libopenmpt-dev
 #              - p7zip-full
 #              - clang-5.0
 #          compiler: clang-5.0
@@ -334,7 +294,6 @@ matrix:
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - gcc-4.8
           compiler: gcc-4.8
@@ -471,72 +430,11 @@ matrix:
         - os: linux
           addons:
             apt:
-              sources:
-              - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
-              - p7zip-full
-              - gcc-4.8
-          compiler: gcc-4.8
-          dist: xenial
-          if: env(DPL_ENABLED) = "1" AND (env(_DPL_JOB_ENABLED) = "1" OR env(DPL_JOB_ENABLE_ALL) = "1")
-              AND (branch =~ /^.*deployer.*$/ OR (tag IS present AND env(DPL_TAG_ENABLED) = "1"))
-              AND env(DPL_TERMINATE_MAIN) != "1"
-          env:
-          - _DPL_JOB_ENABLED=1
-          - _DPL_JOB_NAME=eoan
-          - _DPL_DPUT_TARGET=1
-          - _DPL_PACKAGE_SOURCE=1
-          - PACKAGE_DISTRO=eoan
-          - PACKAGE_SUBVERSION=~19.10eoan
-          #gcc-4.8 (Ubuntu 4.8.5-2ubuntu1~14.04.1) 4.8.5
-        - os: linux
-          addons:
-            apt:
-              sources:
-              - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
-              packages:
-              - libsdl2-mixer-dev
-              - libpng-dev
-              - libgl1-mesa-dev
-              - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
-              - p7zip-full
-              - gcc-4.8
-          compiler: gcc-4.8
-          dist: xenial
-          if: env(DPL_ENABLED) = "1" AND (env(_DPL_JOB_ENABLED) = "1" OR env(DPL_JOB_ENABLE_ALL) = "1")
-              AND (branch =~ /^.*deployer.*$/ OR (tag IS present AND env(DPL_TAG_ENABLED) = "1"))
-              AND env(DPL_TERMINATE_MAIN) != "1"
-          env:
-          - _DPL_JOB_ENABLED=1
-          - _DPL_JOB_NAME=disco
-          - _DPL_DPUT_TARGET=1
-          - _DPL_PACKAGE_SOURCE=1
-          - PACKAGE_DISTRO=disco
-          - PACKAGE_SUBVERSION=~19.04disco
-          #gcc-4.8 (Ubuntu 4.8.5-2ubuntu1~14.04.1) 4.8.5
-        - os: linux
-          addons:
-            apt:
-              sources:
-              - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
-              packages:
-              - libsdl2-mixer-dev
-              - libpng-dev
-              - libgl1-mesa-dev
-              - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - gcc-4.8
           compiler: gcc-4.8
@@ -555,44 +453,11 @@ matrix:
         - os: linux
           addons:
             apt:
-              sources:
-              - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
               packages:
               - libsdl2-mixer-dev
               - libpng-dev
               - libgl1-mesa-dev
               - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
-              - p7zip-full
-              - gcc-4.8
-          compiler: gcc-4.8
-          dist: xenial
-          if: env(DPL_ENABLED) = "1" AND (env(_DPL_JOB_ENABLED) = "1" OR env(DPL_JOB_ENABLE_ALL) = "1")
-              AND (branch =~ /^.*deployer.*$/ OR (tag IS present AND env(DPL_TAG_ENABLED) = "1"))
-              AND env(DPL_TERMINATE_MAIN) != "1"
-          env:
-          - _DPL_JOB_ENABLED=1
-          - _DPL_JOB_NAME=xenial
-          - _DPL_DPUT_TARGET=1
-          - _DPL_PACKAGE_SOURCE=1
-          - PACKAGE_DISTRO=xenial
-          - PACKAGE_SUBVERSION=~16.04xenial
-          #gcc-4.8 (Ubuntu 4.8.5-2ubuntu1~14.04.1) 4.8.5
-        - os: linux
-          addons:
-            apt:
-              sources:
-              - ubuntu-toolchain-r-test
-              - sourceline: 'ppa:stjr/srb2'
-              packages:
-              - libsdl2-mixer-dev
-              - libpng-dev
-              - libgl1-mesa-dev
-              - libgme-dev
-              - libopenmpt-dev
-              - libcurl4-openssl-dev
               - p7zip-full
               - gcc-4.8
           compiler: gcc-4.8
@@ -607,6 +472,75 @@ matrix:
           - _DPL_PACKAGE_SOURCE=1
           - PACKAGE_DISTRO=trusty
           - PACKAGE_SUBVERSION=~14.04trusty
+          #gcc-4.8 (Ubuntu 4.8.5-2ubuntu1~14.04.1) 4.8.5
+        - os: linux
+          addons:
+            apt:
+              packages:
+              - libsdl2-mixer-dev
+              - libpng-dev
+              - libgl1-mesa-dev
+              - libgme-dev
+              - p7zip-full
+              - gcc-4.8
+          compiler: gcc-4.8
+          dist: xenial
+          if: env(DPL_ENABLED) = "1" AND (env(_DPL_JOB_ENABLED) = "1" OR env(DPL_JOB_ENABLE_ALL) = "1")
+              AND (branch =~ /^.*deployer.*$/ OR (tag IS present AND env(DPL_TAG_ENABLED) = "1"))
+              AND env(DPL_TERMINATE_MAIN) != "1"
+          env:
+          - _DPL_JOB_ENABLED=1
+          - _DPL_JOB_NAME=disco
+          - _DPL_DPUT_TARGET=1
+          - _DPL_PACKAGE_SOURCE=1
+          - PACKAGE_DISTRO=disco
+          - PACKAGE_SUBVERSION=~19.04disco
+          #gcc-4.8 (Ubuntu 4.8.5-2ubuntu1~14.04.1) 4.8.5
+        - os: linux
+          addons:
+            apt:
+              packages:
+              - libsdl2-mixer-dev
+              - libpng-dev
+              - libgl1-mesa-dev
+              - libgme-dev
+              - p7zip-full
+              - gcc-4.8
+          compiler: gcc-4.8
+          dist: xenial
+          if: env(DPL_ENABLED) = "1" AND (env(_DPL_JOB_ENABLED) = "1" OR env(DPL_JOB_ENABLE_ALL) = "1")
+              AND (branch =~ /^.*deployer.*$/ OR (tag IS present AND env(DPL_TAG_ENABLED) = "1"))
+              AND env(DPL_TERMINATE_MAIN) != "1"
+          env:
+          - _DPL_JOB_ENABLED=1
+          - _DPL_JOB_NAME=cosmic
+          - _DPL_DPUT_TARGET=1
+          - _DPL_PACKAGE_SOURCE=1
+          - PACKAGE_DISTRO=cosmic
+          - PACKAGE_SUBVERSION=~18.10cosmic
+          #gcc-4.8 (Ubuntu 4.8.5-2ubuntu1~14.04.1) 4.8.5
+        - os: linux
+          addons:
+            apt:
+              packages:
+              - libsdl2-mixer-dev
+              - libpng-dev
+              - libgl1-mesa-dev
+              - libgme-dev
+              - p7zip-full
+              - gcc-4.8
+          compiler: gcc-4.8
+          dist: xenial
+          if: env(DPL_ENABLED) = "1" AND (env(_DPL_JOB_ENABLED) = "1" OR env(DPL_JOB_ENABLE_ALL) = "1")
+              AND (branch =~ /^.*deployer.*$/ OR (tag IS present AND env(DPL_TAG_ENABLED) = "1"))
+              AND env(DPL_TERMINATE_MAIN) != "1"
+          env:
+          - _DPL_JOB_ENABLED=1
+          - _DPL_JOB_NAME=xenial
+          - _DPL_DPUT_TARGET=1
+          - _DPL_PACKAGE_SOURCE=1
+          - PACKAGE_DISTRO=xenial
+          - PACKAGE_SUBVERSION=~16.04xenial
           #gcc-4.8 (Ubuntu 4.8.5-2ubuntu1~14.04.1) 4.8.5
     allow_failures:
       - compiler: clang-3.5
@@ -627,16 +561,12 @@ cache:
 
 addons:
   apt:
-    sources:
-    - sourceline: 'ppa:stjr/srb2'
     packages:
     - libsdl2-mixer-dev
     - libpng-dev
     - libgl1-mesa-dev
     - libgme-dev
     - zlib1g-dev
-    - libopenmpt-dev
-    - libcurl4-openssl-dev
     - p7zip-full
   homebrew:
     taps:
@@ -645,9 +575,7 @@ addons:
     - sdl2_mixer
     - game-music-emu
     - p7zip
-    - libopenmpt
     - cmake
-    - curl
     update: true
 
 

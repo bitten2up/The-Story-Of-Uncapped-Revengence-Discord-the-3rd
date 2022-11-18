@@ -88,12 +88,6 @@ tic_t I_GetTime(void)
   return (since_start*TICRATE)/1000000;
 }
 
-fixed_t I_GetTimeFrac(void)
-{
-  //stub
-  return 0;
-}
-
 void I_Sleep(void){}
 
 void I_GetEvent(void){}
@@ -218,10 +212,6 @@ INT32 I_StartupSystem(void)
 
 void I_ShutdownSystem(void){}
 
-#ifdef HAVE_DISCORDRPC
-void DRPC_ShutDown(void){}
-#endif
-
 void I_GetDiskFreeSpace(INT64* freespace)
 {
   *freespace = 0;
@@ -254,8 +244,6 @@ void I_GetJoystickEvents(void){}
 void I_GetJoystick2Events(void){}
 
 void I_GetMouseEvents(void){}
-
-void I_UpdateMouseGrab(void){}
 
 char *I_GetEnv(const char *name)
 {

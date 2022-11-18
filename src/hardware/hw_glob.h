@@ -1,13 +1,20 @@
-// SONIC ROBO BLAST 2
+// Emacs style mode select   -*- C++ -*-
 //-----------------------------------------------------------------------------
-// Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
 //
-// This program is free software distributed under the
-// terms of the GNU General Public License, version 2.
-// See the 'LICENSE' file for more details.
+// Copyright (C) 1998-2000 by DooM Legacy Team.
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; either version 2
+// of the License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
 //-----------------------------------------------------------------------------
-/// \file hw_glob.h
+/// \file
 /// \brief globals (shared data & code) for hw_ modules
 
 #ifndef _HWR_GLOB_H_
@@ -16,7 +23,6 @@
 #include "hw_defs.h"
 #include "hw_main.h"
 #include "../m_misc.h"
-#include "../p_setup.h"
 
 // the original aspect ratio of Doom graphics isn't square
 #define ORIGINAL_ASPECT (320.0f/200.0f)
@@ -59,36 +65,24 @@ typedef struct
 
 // needed for sprite rendering
 // equivalent of the software renderer's vissprites
-typedef struct gl_vissprite_s
+typedef struct gr_vissprite_s
 {
+	// Doubly linked list
+	struct gr_vissprite_s *prev;
+	struct gr_vissprite_s *next;
 	float x1, x2;
 	float z1, z2;
-	float gz, gzt;
-
-	float tz;
-	float tracertz; // for MF2_LINKDRAW sprites, this contains tracer's tz for use in sorting
-
-	float scale;
-	float shadowheight, shadowscale;
-
-	float spritexscale, spriteyscale;
-	float spritexoffset, spriteyoffset;
-
-	UINT32 renderflags;
-	UINT8 rotateflags;
-
-	boolean flip, vflip;
-	boolean precip; // Tails 08-25-2002
-	boolean rotated;
+	float tz, ty;
+	lumpnum_t patchlumpnum;
+	boolean flip;
 	UINT8 translucency;       //alpha level 0-255
-
-	//Hurdler: 25/04/2000: now support colormap in hardware mode
+	mobj_t *mobj;
+	boolean precip; // Tails 08-25-2002
+	boolean vflip;
+   //Hurdler: 25/04/2000: now support colormap in hardware mode
 	UINT8 *colormap;
 	INT32 dispoffset; // copy of info->dispoffset, affects ordering but not drawing
-
-	patch_t *gpatch;
-	mobj_t *mobj; // NOTE: This is a precipmobj_t if precip is true !!! Watch out.
-} gl_vissprite_t;
+} gr_vissprite_t;
 
 // --------
 // hw_bsp.c
@@ -99,61 +93,34 @@ extern size_t addsubsector;
 void HWR_InitPolyPool(void);
 void HWR_FreePolyPool(void);
 
-void HWR_FreeExtraSubsectors(void);
-
 // --------
 // hw_cache.c
 // --------
-RGBA_t *HWR_GetTexturePalette(void);
+void HWR_InitTextureCache(void);
+void HWR_FreeTextureCache(void);
+void HWR_FreeExtraSubsectors(void);
 
-void HWR_InitMapTextures(void);
-void HWR_LoadMapTextures(size_t pnumtextures);
-void HWR_FreeMapTextures(void);
-
-patch_t *HWR_GetCachedGLPatchPwad(UINT16 wad, UINT16 lump);
-patch_t *HWR_GetCachedGLPatch(lumpnum_t lumpnum);
-
-void HWR_GetPatch(patch_t *patch);
-void HWR_GetMappedPatch(patch_t *patch, const UINT8 *colormap);
-void HWR_GetFadeMask(lumpnum_t fademasklumpnum);
-patch_t *HWR_GetPic(lumpnum_t lumpnum);
-
-GLMapTexture_t *HWR_GetTexture(INT32 tex);
-void HWR_GetLevelFlat(levelflat_t *levelflat);
-void HWR_GetRawFlat(lumpnum_t flatlumpnum);
-
-void HWR_FreeTexture(patch_t *patch);
-void HWR_FreeTextureData(patch_t *patch);
-void HWR_FreeTextureColormaps(patch_t *patch);
-void HWR_ClearAllTextures(void);
-void HWR_FreeColormapCache(void);
+void HWR_GetFlat(lumpnum_t flatlumpnum);
+GLTexture_t *HWR_GetTexture(INT32 tex);
+void HWR_GetPatch(GLPatch_t *gpatch);
+void HWR_GetMappedPatch(GLPatch_t *gpatch, const UINT8 *colormap);
 void HWR_UnlockCachedPatch(GLPatch_t *gpatch);
-
+GLPatch_t *HWR_GetPic(lumpnum_t lumpnum);
 void HWR_SetPalette(RGBA_t *palette);
-void HWR_SetMapPalette(void);
-UINT32 HWR_CreateLightTable(UINT8 *lighttable);
-UINT32 HWR_GetLightTableID(extracolormap_t *colormap);
-void HWR_ClearLightTables(void);
-
+GLPatch_t *HWR_GetCachedGLPatchPwad(UINT16 wad, UINT16 lump);
+GLPatch_t *HWR_GetCachedGLPatch(lumpnum_t lumpnum);
+void HWR_GetFadeMask(lumpnum_t fademasklumpnum);
 
 // --------
 // hw_draw.c
 // --------
+extern float gr_patch_scalex;
+extern float gr_patch_scaley;
+
+extern consvar_t cv_grrounddown; // on/off
+
 extern INT32 patchformat;
 extern INT32 textureformat;
-
-// --------
-// hw_shaders.c
-// --------
-boolean HWR_InitShaders(void);
-void HWR_CompileShaders(void);
-
-int HWR_GetShaderFromTarget(int shader_target);
-
-void HWR_LoadAllCustomShaders(void);
-void HWR_LoadCustomShadersFromFile(UINT16 wadnum, boolean PK3);
-const char *HWR_GetShaderName(INT32 shader);
-
-extern customshaderxlat_t shaderxlat[];
+extern boolean firetranslucent;
 
 #endif //_HW_GLOB_

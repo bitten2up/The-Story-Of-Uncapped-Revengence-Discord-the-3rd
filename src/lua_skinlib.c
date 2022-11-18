@@ -1,7 +1,7 @@
 // SONIC ROBO BLAST 2
 //-----------------------------------------------------------------------------
 // Copyright (C) 2014-2016 by John "JTE" Muniz.
-// Copyright (C) 2014-2022 by Sonic Team Junior.
+// Copyright (C) 2014-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -11,8 +11,9 @@
 /// \brief player skin structure library for Lua scripting
 
 #include "doomdef.h"
+#ifdef HAVE_BLUA
 #include "fastcmp.h"
-#include "r_skins.h"
+#include "r_things.h"
 #include "sounds.h"
 
 #include "lua_script.h"
@@ -21,16 +22,19 @@
 enum skin {
 	skin_valid = 0,
 	skin_name,
+	skin_spritedef,
 	skin_wadnum,
 	skin_flags,
 	skin_realname,
 	skin_hudname,
+	skin_charsel,
+	skin_face,
+	skin_superface,
 	skin_ability,
 	skin_ability2,
 	skin_thokitem,
 	skin_spinitem,
 	skin_revitem,
-	skin_followitem,
 	skin_actionspd,
 	skin_mindash,
 	skin_maxdash,
@@ -40,34 +44,27 @@ enum skin {
 	skin_accelstart,
 	skin_acceleration,
 	skin_jumpfactor,
-	skin_radius,
-	skin_height,
-	skin_spinheight,
-	skin_shieldscale,
-	skin_camerascale,
 	skin_starttranscolor,
 	skin_prefcolor,
-	skin_supercolor,
-	skin_prefoppositecolor,
 	skin_highresscale,
-	skin_contspeed,
-	skin_contangle,
-	skin_soundsid,
-	skin_sprites
+	skin_soundsid
 };
 static const char *const skin_opt[] = {
 	"valid",
 	"name",
+	"spritedef",
 	"wadnum",
 	"flags",
 	"realname",
 	"hudname",
+	"charsel",
+	"face",
+	"superface",
 	"ability",
 	"ability2",
 	"thokitem",
 	"spinitem",
 	"revitem",
-	"followitem",
 	"actionspd",
 	"mindash",
 	"maxdash",
@@ -77,20 +74,10 @@ static const char *const skin_opt[] = {
 	"accelstart",
 	"acceleration",
 	"jumpfactor",
-	"radius",
-	"height",
-	"spinheight",
-	"shieldscale",
-	"camerascale",
 	"starttranscolor",
 	"prefcolor",
-	"supercolor",
-	"prefoppositecolor",
 	"highresscale",
-	"contspeed",
-	"contangle",
 	"soundsid",
-	"sprites",
 	NULL};
 
 #define UNIMPLEMENTED luaL_error(L, LUA_QL("skin_t") " field " LUA_QS " is not implemented for Lua and cannot be accessed.", skin_opt[field])
@@ -99,6 +86,7 @@ static int skin_get(lua_State *L)
 {
 	skin_t *skin = *((skin_t **)luaL_checkudata(L, 1, META_SKIN));
 	enum skin field = luaL_checkoption(L, 2, NULL, skin_opt);
+	INT32 i;
 
 	// skins are always valid, only added, never removed
 	I_Assert(skin != NULL);
@@ -111,6 +99,8 @@ static int skin_get(lua_State *L)
 	case skin_name:
 		lua_pushstring(L, skin->name);
 		break;
+	case skin_spritedef:
+		return UNIMPLEMENTED;
 	case skin_wadnum:
 		// !!WARNING!! May differ between clients due to music wads, therefore NOT NETWORK SAFE
 		return UNIMPLEMENTED;
@@ -122,6 +112,24 @@ static int skin_get(lua_State *L)
 		break;
 	case skin_hudname:
 		lua_pushstring(L, skin->hudname);
+		break;
+	case skin_charsel:
+		for (i = 0; i < 8; i++)
+			if (!skin->charsel[i])
+				break;
+		lua_pushlstring(L, skin->charsel, i);
+		break;
+	case skin_face:
+		for (i = 0; i < 8; i++)
+			if (!skin->face[i])
+				break;
+		lua_pushlstring(L, skin->face, i);
+		break;
+	case skin_superface:
+		for (i = 0; i < 8; i++)
+			if (!skin->superface[i])
+				break;
+		lua_pushlstring(L, skin->superface, i);
 		break;
 	case skin_ability:
 		lua_pushinteger(L, skin->ability);
@@ -137,9 +145,6 @@ static int skin_get(lua_State *L)
 		break;
 	case skin_revitem:
 		lua_pushinteger(L, skin->revitem);
-		break;
-	case skin_followitem:
-		lua_pushinteger(L, skin->followitem);
 		break;
 	case skin_actionspd:
 		lua_pushfixed(L, skin->actionspd);
@@ -168,47 +173,17 @@ static int skin_get(lua_State *L)
 	case skin_jumpfactor:
 		lua_pushfixed(L, skin->jumpfactor);
 		break;
-	case skin_radius:
-		lua_pushfixed(L, skin->radius);
-		break;
-	case skin_height:
-		lua_pushfixed(L, skin->height);
-		break;
-	case skin_spinheight:
-		lua_pushfixed(L, skin->spinheight);
-		break;
-	case skin_shieldscale:
-		lua_pushfixed(L, skin->shieldscale);
-		break;
-	case skin_camerascale:
-		lua_pushfixed(L, skin->camerascale);
-		break;
 	case skin_starttranscolor:
 		lua_pushinteger(L, skin->starttranscolor);
 		break;
 	case skin_prefcolor:
 		lua_pushinteger(L, skin->prefcolor);
 		break;
-	case skin_supercolor:
-		lua_pushinteger(L, skin->supercolor);
-		break;
-	case skin_prefoppositecolor:
-		lua_pushinteger(L, skin->prefoppositecolor);
-		break;
 	case skin_highresscale:
 		lua_pushinteger(L, skin->highresscale);
 		break;
-	case skin_contspeed:
-		lua_pushinteger(L, skin->contspeed);
-		break;
-	case skin_contangle:
-		lua_pushinteger(L, skin->contangle);
-		break;
 	case skin_soundsid:
 		LUA_PushUserdata(L, skin->soundsid, META_SOUNDSID);
-		break;
-	case skin_sprites:
-		LUA_PushUserdata(L, skin->sprites, META_SKINSPRITES);
 		break;
 	}
 	return 1;
@@ -320,49 +295,6 @@ static int soundsid_num(lua_State *L)
 	return 1;
 }
 
-enum spritesopt {
-	numframes = 0
-};
-
-static const char *const sprites_opt[] = {
-	"numframes",
-	NULL};
-
-// skin.sprites[i] -> sprites[i]
-static int lib_getSkinSprite(lua_State *L)
-{
-	spritedef_t *sprites = *(spritedef_t **)luaL_checkudata(L, 1, META_SKINSPRITES);
-	playersprite_t i = luaL_checkinteger(L, 2);
-
-	if (i < 0 || i >= NUMPLAYERSPRITES*2)
-		return luaL_error(L, LUA_QL("skin_t") " field 'sprites' index %d out of range (0 - %d)", i, (NUMPLAYERSPRITES*2)-1);
-
-	LUA_PushUserdata(L, &sprites[i], META_SKINSPRITESLIST);
-	return 1;
-}
-
-// #skin.sprites -> NUMPLAYERSPRITES*2
-static int lib_numSkinsSprites(lua_State *L)
-{
-	lua_pushinteger(L, NUMPLAYERSPRITES*2);
-	return 1;
-}
-
-static int sprite_get(lua_State *L)
-{
-	spritedef_t *sprite = *(spritedef_t **)luaL_checkudata(L, 1, META_SKINSPRITESLIST);
-	enum spritesopt field = luaL_checkoption(L, 2, NULL, sprites_opt);
-
-	switch (field)
-	{
-	case numframes:
-		lua_pushinteger(L, sprite->numframes);
-		break;
-	}
-	return 1;
-}
-
-
 int LUA_SkinLib(lua_State *L)
 {
 	luaL_newmetatable(L, META_SKIN);
@@ -384,19 +316,6 @@ int LUA_SkinLib(lua_State *L)
 		lua_setfield(L, -2, "__len");
 	lua_pop(L,1);
 
-	luaL_newmetatable(L, META_SKINSPRITES);
-		lua_pushcfunction(L, lib_getSkinSprite);
-		lua_setfield(L, -2, "__index");
-
-		lua_pushcfunction(L, lib_numSkinsSprites);
-		lua_setfield(L, -2, "__len");
-	lua_pop(L,1);
-
-	luaL_newmetatable(L, META_SKINSPRITESLIST);
-		lua_pushcfunction(L, sprite_get);
-		lua_setfield(L, -2, "__index");
-	lua_pop(L,1);
-
 	lua_newuserdata(L, 0);
 		lua_createtable(L, 0, 2);
 			lua_pushcfunction(L, lib_getSkin);
@@ -409,3 +328,5 @@ int LUA_SkinLib(lua_State *L)
 
 	return 0;
 }
+
+#endif

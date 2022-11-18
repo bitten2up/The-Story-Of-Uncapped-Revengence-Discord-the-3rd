@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
+// Copyright (C) 1999-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -21,12 +21,9 @@
 #include "m_random.h"
 #include "lua_script.h"
 #include "lua_hook.h"
-#include "m_perfstats.h"
-#include "i_system.h" // I_GetPreciseTime
-#include "r_fps.h"
-#include "i_video.h" // rendermode
-#include "m_cheat.h" // Object place
-//#include "r_main.h" // cv_skybox, currently broken though
+
+// Object place
+#include "m_cheat.h"
 
 tic_t leveltime;
 
@@ -38,8 +35,8 @@ tic_t leveltime;
 // but the first element must be thinker_t.
 //
 
-// The entries will behave like both the head and tail of the lists.
-thinker_t thlist[NUM_THINKERLISTS];
+// Both the head and tail of the thinker list.
+thinker_t thinkercap;
 
 void Command_Numthinkers_f(void)
 {
@@ -47,9 +44,6 @@ void Command_Numthinkers_f(void)
 	INT32 count = 0;
 	actionf_p1 action;
 	thinker_t *think;
-	thinklistnum_t start = 0;
-	thinklistnum_t end = NUM_THINKERLISTS - 1;
-	thinklistnum_t i;
 
 	if (gamestate != GS_LEVEL)
 	{
@@ -76,7 +70,6 @@ void Command_Numthinkers_f(void)
 	switch (num)
 	{
 		case 1:
-			start = end = THINK_MOBJ;
 			action = (actionf_p1)P_MobjThinker;
 			CONS_Printf(M_GetText("Number of %s: "), "P_MobjThinker");
 			break;
@@ -89,17 +82,14 @@ void Command_Numthinkers_f(void)
 			CONS_Printf(M_GetText("Number of %s: "), "P_SnowThinker");
 			break;*/
 		case 2:
-			start = end = THINK_PRECIP;
 			action = (actionf_p1)P_NullPrecipThinker;
 			CONS_Printf(M_GetText("Number of %s: "), "P_NullPrecipThinker");
 			break;
 		case 3:
-			start = end = THINK_MAIN;
 			action = (actionf_p1)T_Friction;
 			CONS_Printf(M_GetText("Number of %s: "), "T_Friction");
 			break;
 		case 4:
-			start = end = THINK_MAIN;
 			action = (actionf_p1)T_Pusher;
 			CONS_Printf(M_GetText("Number of %s: "), "T_Pusher");
 			break;
@@ -112,15 +102,12 @@ void Command_Numthinkers_f(void)
 			return;
 	}
 
-	for (i = start; i <= end; i++)
+	for (think = thinkercap.next; think != &thinkercap; think = think->next)
 	{
-		for (think = thlist[i].next; think != &thlist[i]; think = think->next)
-		{
-			if (think->function.acp1 != action)
-				continue;
+		if (think->function.acp1 != action)
+			continue;
 
-			count++;
-		}
+		count++;
 	}
 
 	CONS_Printf("%d\n", count);
@@ -152,9 +139,9 @@ void Command_CountMobjs_f(void)
 
 			count = 0;
 
-			for (th = thlist[THINK_MOBJ].next; th != &thlist[THINK_MOBJ]; th = th->next)
+			for (th = thinkercap.next; th != &thinkercap; th = th->next)
 			{
-				if (th->function.acp1 == (actionf_p1)P_RemoveThinkerDelayed)
+				if (th->function.acp1 != (actionf_p1)P_MobjThinker)
 					continue;
 
 				if (((mobj_t *)th)->type == i)
@@ -172,9 +159,9 @@ void Command_CountMobjs_f(void)
 	{
 		count = 0;
 
-		for (th = thlist[THINK_MOBJ].next; th != &thlist[THINK_MOBJ]; th = th->next)
+		for (th = thinkercap.next; th != &thinkercap; th = th->next)
 		{
-			if (th->function.acp1 == (actionf_p1)P_RemoveThinkerDelayed)
+			if (th->function.acp1 != (actionf_p1)P_MobjThinker)
 				continue;
 
 			if (((mobj_t *)th)->type == i)
@@ -191,22 +178,19 @@ void Command_CountMobjs_f(void)
 //
 void P_InitThinkers(void)
 {
-	UINT8 i;
-	for (i = 0; i < NUM_THINKERLISTS; i++)
-		thlist[i].prev = thlist[i].next = &thlist[i];
+	thinkercap.prev = thinkercap.next = &thinkercap;
 }
 
+//
+// P_AddThinker
 // Adds a new thinker at the end of the list.
-void P_AddThinker(const thinklistnum_t n, thinker_t *thinker)
+//
+void P_AddThinker(thinker_t *thinker)
 {
-#ifdef PARANOIA
-	I_Assert(n < NUM_THINKERLISTS);
-#endif
-
-	thlist[n].prev->next = thinker;
-	thinker->next = &thlist[n];
-	thinker->prev = thlist[n].prev;
-	thlist[n].prev = thinker;
+	thinkercap.prev->next = thinker;
+	thinker->next = &thinkercap;
+	thinker->prev = thinkercap.prev;
+	thinkercap.prev = thinker;
 
 	thinker->references = 0;    // killough 11/98: init reference counter to 0
 }
@@ -229,34 +213,22 @@ static thinker_t *currentthinker;
 // remove it, and set currentthinker to one node preceeding it, so
 // that the next step in P_RunThinkers() will get its successor.
 //
-void P_RemoveThinkerDelayed(thinker_t *thinker)
+void P_RemoveThinkerDelayed(void *pthinker)
 {
-	thinker_t *next;
-#ifdef PARANOIA
-#define BEENAROUNDBIT (0x40000000) // has to be sufficiently high that it's unlikely to happen in regular gameplay. If you change this, pay attention to the bit pattern of INT32_MIN.
-	if (thinker->references & ~BEENAROUNDBIT)
+	thinker_t *thinker = pthinker;
+	if (!thinker->references)
 	{
-		if (thinker->references & BEENAROUNDBIT) // Usually gets cleared up in one frame; what's going on here, then?
-			CONS_Printf("Number of potentially faulty references: %d\n", (thinker->references & ~BEENAROUNDBIT));
-		thinker->references |= BEENAROUNDBIT;
-		return;
+		{
+			/* Remove from main thinker list */
+			thinker_t *next = thinker->next;
+			/* Note that currentthinker is guaranteed to point to us,
+			 * and since we're freeing our memory, we had better change that. So
+			 * point it to thinker->prev, so the iterator will correctly move on to
+			 * thinker->prev->next = thinker->next */
+			(next->prev = currentthinker = thinker->prev)->next = next;
+		}
+		Z_Free(thinker);
 	}
-#undef BEENAROUNDBIT
-#else
-	if (thinker->references)
-		return;
-#endif
-
-	/* Remove from main thinker list */
-	next = thinker->next;
-	/* Note that currentthinker is guaranteed to point to us,
-	* and since we're freeing our memory, we had better change that. So
-	* point it to thinker->prev, so the iterator will correctly move on to
-	* thinker->prev->next = thinker->next */
-	(next->prev = currentthinker = thinker->prev)->next = next;
-
-	R_DestroyLevelInterpolators(thinker);
-	Z_Free(thinker);
 }
 
 //
@@ -273,8 +245,10 @@ void P_RemoveThinkerDelayed(thinker_t *thinker)
 //
 void P_RemoveThinker(thinker_t *thinker)
 {
+#ifdef HAVE_BLUA
 	LUA_InvalidateUserdata(thinker);
-	thinker->function.acp1 = (actionf_p1)P_RemoveThinkerDelayed;
+#endif
+	thinker->function.acp1 = P_RemoveThinkerDelayed;
 }
 
 /*
@@ -322,20 +296,11 @@ if ((*mop = targ) != NULL) // Set new target and if non-NULL, increase its count
 //
 static inline void P_RunThinkers(void)
 {
-	size_t i;
-	for (i = 0; i < NUM_THINKERLISTS; i++)
+	for (currentthinker = thinkercap.next; currentthinker != &thinkercap; currentthinker = currentthinker->next)
 	{
-		PS_START_TIMING(ps_thlist_times[i]);
-		for (currentthinker = thlist[i].next; currentthinker != &thlist[i]; currentthinker = currentthinker->next)
-		{
-#ifdef PARANOIA
-			I_Assert(currentthinker->function.acp1 != NULL);
-#endif
+		if (currentthinker->function.acp1)
 			currentthinker->function.acp1(currentthinker);
-		}
-		PS_STOP_TIMING(ps_thlist_times[i]);
 	}
-
 }
 
 //
@@ -394,7 +359,7 @@ static void P_DoAutobalanceTeams(void)
 	totalred = red + redflagcarrier;
 	totalblue = blue + blueflagcarrier;
 
-	if ((abs(totalred - totalblue) > max(1, (totalred + totalblue) / 8)))
+	if ((abs(totalred - totalblue) > cv_autobalance.value))
 	{
 		if (totalred > totalblue)
 		{
@@ -407,7 +372,8 @@ static void P_DoAutobalanceTeams(void)
 			usvalue  = SHORT(NetPacket.value.l|NetPacket.value.b);
 			SendNetXCmd(XD_TEAMCHANGE, &usvalue, sizeof(usvalue));
 		}
-		else //if (totalblue > totalred)
+
+		if (totalblue > totalred)
 		{
 			i = M_RandomKey(blue);
 			NetPacket.packet.newteam = 1;
@@ -459,7 +425,7 @@ void P_DoTeamscrambling(void)
 
 static inline void P_DoSpecialStageStuff(void)
 {
-	boolean stillalive = false;
+	boolean inwater = false;
 	INT32 i;
 
 	// Can't drown in a special stage
@@ -471,60 +437,69 @@ static inline void P_DoSpecialStageStuff(void)
 		players[i].powers[pw_underwater] = players[i].powers[pw_spacetime] = 0;
 	}
 
-	//if (sstimer < 15*TICRATE+6 && sstimer > 7 && (mapheaderinfo[gamemap-1]->levelflags & LF_SPEEDMUSIC))
-		//S_SpeedMusic(1.4f);
+	if (sstimer < 15*TICRATE+6 && sstimer > 7 && (mapheaderinfo[gamemap-1]->levelflags & LF_SPEEDMUSIC))
+		S_SpeedMusic(1.4f);
 
-	if (sstimer && !objectplacing)
+	if (sstimer < 7 && sstimer > 0) // The special stage time is up!
 	{
-		UINT16 countspheres = 0;
+		sstimer = 0;
+		for (i = 0; i < MAXPLAYERS; i++)
+		{
+			if (playeringame[i])
+			{
+				players[i].exiting = (14*TICRATE)/5 + 1;
+				players[i].pflags &= ~PF_GLIDING;
+			}
+
+			if (i == consoleplayer)
+				S_StartSound(NULL, sfx_lose);
+		}
+
+		if (mapheaderinfo[gamemap-1]->levelflags & LF_SPEEDMUSIC)
+			S_SpeedMusic(1.0f);
+
+		stagefailed = true;
+	}
+
+	if (sstimer > 1) // As long as time isn't up...
+	{
+		UINT32 ssrings = 0;
 		// Count up the rings of all the players and see if
 		// they've collected the required amount.
 		for (i = 0; i < MAXPLAYERS; i++)
 			if (playeringame[i])
 			{
-				tic_t oldnightstime = players[i].nightstime;
-				countspheres += players[i].spheres;
-
-				if (!oldnightstime)
-					continue;
+				ssrings += (players[i].mo->health-1);
 
 				// If in water, deplete timer 6x as fast.
-				if (players[i].mo->eflags & (MFE_TOUCHWATER|MFE_UNDERWATER) && !(players[i].powers[pw_shield] & ((players[i].mo->eflags & MFE_TOUCHLAVA) ? SH_PROTECTFIRE : SH_PROTECTWATER)))
-					players[i].nightstime -= 5;
-				if (--players[i].nightstime > 6)
-				{
-					if (P_IsLocalPlayer(&players[i]) && oldnightstime > 10*TICRATE && players[i].nightstime <= 10*TICRATE)
-						S_ChangeMusicInternal("_drown", false);
-					stillalive = true;
-				}
-				else if (!players[i].exiting)
-				{
-					players[i].exiting = (14*TICRATE)/5 + 1;
-					players[i].pflags &= ~(PF_GLIDING|PF_BOUNCING);
-					players[i].nightstime = 0;
-					if (P_IsLocalPlayer(&players[i]))
-						S_StartSound(NULL, sfx_s3k66);
-				}
+				if ((players[i].mo->eflags & MFE_TOUCHWATER)
+					|| (players[i].mo->eflags & MFE_UNDERWATER))
+					inwater = true;
 			}
 
-		if (stillalive)
+		if (ssrings >= totalrings && totalrings > 0)
 		{
-			if (countspheres >= ssspheres)
-			{
-				// Halt all the players
-				for (i = 0; i < MAXPLAYERS; i++)
-					if (playeringame[i] && !players[i].exiting)
-					{
-						players[i].mo->momx = players[i].mo->momy = 0;
-						players[i].exiting = (14*TICRATE)/5 + 1;
-					}
-				sstimer = 0;
-				P_GiveEmerald(true);
-				P_RestoreMusic(&players[consoleplayer]);
-			}
-		}
-		else
+			// Halt all the players
+			for (i = 0; i < MAXPLAYERS; i++)
+				if (playeringame[i])
+				{
+					players[i].mo->momx = players[i].mo->momy = 0;
+					players[i].exiting = (14*TICRATE)/5 + 1;
+				}
+
 			sstimer = 0;
+
+			P_GiveEmerald(true);
+		}
+
+		// Decrement the timer
+		if (!objectplacing)
+		{
+			if (inwater)
+				sstimer -= 6;
+			else
+				sstimer--;
+		}
 	}
 }
 
@@ -559,7 +534,7 @@ static inline void P_DoTagStuff(void)
 		for (i=0; i < MAXPLAYERS; i++)
 		{
 			if (playeringame[i] && !players[i].spectator && players[i].playerstate == PST_LIVE
-			&& !(players[i].pflags & (PF_TAGIT|PF_GAMETYPEOVER)))
+			&& !(players[i].pflags & (PF_TAGIT|PF_TAGGED)))
 				//points given is the number of participating players divided by two.
 				P_AddPlayerScore(&players[i], participants/2);
 		}
@@ -594,24 +569,10 @@ void P_Ticker(boolean run)
 {
 	INT32 i;
 
-	// Increment jointime and quittime even if paused
+	//Increment jointime even if paused.
 	for (i = 0; i < MAXPLAYERS; i++)
 		if (playeringame[i])
-		{
-			players[i].jointime++;
-
-			if (players[i].quittime)
-			{
-				players[i].quittime++;
-
-				if (players[i].quittime == 30 * TICRATE && G_TagGametype())
-					P_CheckSurvivors();
-
-				if (server && players[i].quittime >= (tic_t)FixedMul(cv_rejointimeout.value, 60 * TICRATE)
-				&& !(players[i].quittime % TICRATE))
-					SendKick(i, KICK_MSG_PLAYER_QUIT);
-			}
-		}
+			++players[i].jointime;
 
 	if (objectplacing)
 	{
@@ -621,20 +582,13 @@ void P_Ticker(boolean run)
 			OP_ObjectplaceMovement(&players[0]);
 			P_MoveChaseCamera(&players[0], &camera, false);
 			P_MapEnd();
-			S_SetStackAdjustmentStart();
 			return;
 		}
 	}
 
 	// Check for pause or menu up in single player
 	if (paused || P_AutoPause())
-	{
-		S_SetStackAdjustmentStart();
 		return;
-	}
-
-	if (!S_MusicPaused())
-		S_AdjustMusicStackTics();
 
 	postimgtype = postimgtype2 = postimg_none;
 
@@ -642,38 +596,21 @@ void P_Ticker(boolean run)
 
 	if (run)
 	{
-		R_UpdateMobjInterpolators();
-
 		if (demorecording)
 			G_WriteDemoTiccmd(&players[consoleplayer].cmd, 0);
 		if (demoplayback)
-		{
-			player_t* p = &players[consoleplayer];
-			G_ReadDemoTiccmd(&p->cmd, 0);
-			if (!cv_freedemocamera.value)
-			{
-				P_ForceLocalAngle(p, p->cmd.angleturn << 16);
-				localaiming = p->aiming;
-			}
-		}
+			G_ReadDemoTiccmd(&players[consoleplayer].cmd, 0);
 
-		ps_lua_mobjhooks.value.i = 0;
-		ps_checkposition_calls.value.i = 0;
-
-		LUA_HOOK(PreThinkFrame);
-
-		PS_START_TIMING(ps_playerthink_time);
 		for (i = 0; i < MAXPLAYERS; i++)
 			if (playeringame[i] && players[i].mo && !P_MobjWasRemoved(players[i].mo))
 				P_PlayerThink(&players[i]);
-		PS_STOP_TIMING(ps_playerthink_time);
 	}
 
 	// Keep track of how long they've been playing!
 	if (!demoplayback) // Don't increment if a demo is playing.
 		totalplaytime++;
 
-	if (!(maptol & TOL_NIGHTS) && G_IsSpecialStage(gamemap))
+	if (!useNightsSS && G_IsSpecialStage(gamemap))
 		P_DoSpecialStageStuff();
 
 	if (runemeraldmanager)
@@ -681,18 +618,16 @@ void P_Ticker(boolean run)
 
 	if (run)
 	{
-		PS_START_TIMING(ps_thinkertime);
 		P_RunThinkers();
-		PS_STOP_TIMING(ps_thinkertime);
 
 		// Run any "after all the other thinkers" stuff
 		for (i = 0; i < MAXPLAYERS; i++)
 			if (playeringame[i] && players[i].mo && !P_MobjWasRemoved(players[i].mo))
 				P_PlayerAfterThink(&players[i]);
 
-		PS_START_TIMING(ps_lua_thinkframe_time);
-		LUA_HookThinkFrame();
-		PS_STOP_TIMING(ps_lua_thinkframe_time);
+#ifdef HAVE_BLUA
+		LUAh_ThinkFrame();
+#endif
 	}
 
 	// Run shield positioning
@@ -717,7 +652,7 @@ void P_Ticker(boolean run)
 
 	if (run)
 	{
-		if (countdowntimer && G_PlatformGametype() && ((gametyperules & GTR_CAMPAIGN) || leveltime >= 4*TICRATE) && !stoppedclock && --countdowntimer <= 0)
+		if (countdowntimer && --countdowntimer <= 0)
 		{
 			countdowntimer = 0;
 			countdowntimeup = true;
@@ -729,9 +664,7 @@ void P_Ticker(boolean run)
 				if (!players[i].mo)
 					continue;
 
-				if (multiplayer || netgame)
-					players[i].exiting = 0;
-				P_DamageMobj(players[i].mo, NULL, NULL, 1, DMG_INSTAKILL);
+				P_DamageMobj(players[i].mo, NULL, NULL, 10000);
 			}
 		}
 
@@ -763,46 +696,6 @@ void P_Ticker(boolean run)
 			G_ConsGhostTic();
 		if (modeattacking)
 			G_GhostTicker();
-
-		LUA_HOOK(PostThinkFrame);
-	}
-
-	if (run)
-	{
-		R_UpdateLevelInterpolators();
-		/*
-		R_UpdateViewInterpolation();
-
-		// Hack: ensure newview is assigned every tic.
-		// Ensures view interpolation is T-1 to T in poor network conditions
-		// We need a better way to assign view state decoupled from game logic
-		if (rendermode != render_none)
-		{
-			player_t *player1 = &players[displayplayer];
-			if (player1->mo && skyboxmo[0] && cv_skybox.value)
-			{
-				R_SkyboxFrame(player1);
-			}
-			if (player1->mo)
-			{
-				R_SetupFrame(player1);
-			}
-
-			if (splitscreen)
-			{
-				player_t *player2 = &players[secondarydisplayplayer];
-				if (player2->mo && skyboxmo[0] && cv_skybox.value)
-				{
-					R_SkyboxFrame(player2);
-				}
-				if (player2->mo)
-				{
-					R_SetupFrame(player2);
-				}
-			}
-		}
-		*/
-		
 	}
 
 	P_MapEnd();
@@ -818,14 +711,9 @@ void P_PreTicker(INT32 frames)
 
 	postimgtype = postimgtype2 = postimg_none;
 
-	if (marathonmode & MA_INGAME)
-		marathonmode |= MA_INIT;
-
 	for (framecnt = 0; framecnt < frames; ++framecnt)
 	{
 		P_MapStart();
-
-		LUA_HOOK(PreThinkFrame);
 
 		for (i = 0; i < MAXPLAYERS; i++)
 			if (playeringame[i] && players[i].mo && !P_MobjWasRemoved(players[i].mo))
@@ -836,9 +724,7 @@ void P_PreTicker(INT32 frames)
 				memcpy(&temptic, &players[i].cmd, sizeof(ticcmd_t));
 				memset(&players[i].cmd, 0, sizeof(ticcmd_t));
 				// correct angle on spawn...
-				players[i].angleturn += temptic.angleturn - players[i].oldrelangleturn;
-				players[i].oldrelangleturn = temptic.angleturn;
-				players[i].cmd.angleturn = players[i].angleturn;
+				players[i].cmd.angleturn = temptic.angleturn;
 
 				P_PlayerThink(&players[i]);
 
@@ -852,7 +738,9 @@ void P_PreTicker(INT32 frames)
 			if (playeringame[i] && players[i].mo && !P_MobjWasRemoved(players[i].mo))
 				P_PlayerAfterThink(&players[i]);
 
-		LUA_HookThinkFrame();
+#ifdef HAVE_BLUA
+		LUAh_ThinkFrame();
+#endif
 
 		// Run shield positioning
 		P_RunShields();
@@ -861,11 +749,6 @@ void P_PreTicker(INT32 frames)
 		P_UpdateSpecials();
 		P_RespawnSpecials();
 
-		LUA_HOOK(PostThinkFrame);
-
 		P_MapEnd();
 	}
-
-	if (marathonmode & MA_INGAME)
-		marathonmode &= ~MA_INIT;
 }

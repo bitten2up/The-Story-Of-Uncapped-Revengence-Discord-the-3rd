@@ -2,7 +2,6 @@
 //-----------------------------------------------------------------------------
 //
 // Copyright (C) 1993-1996 by id Software, Inc.
-// Copyright (C) 2014-2022 by Sonic Team Junior.
 //
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
@@ -33,7 +32,7 @@
 #endif
 
 #ifdef HAVE_MIXER
-#include <SDL_mixer.h>
+#include "SDL_mixer.h"
 /* This is the version number macro for the current SDL_mixer version: */
 #ifndef SDL_MIXER_COMPILEDVERSION
 #define SDL_MIXER_COMPILEDVERSION \
@@ -1387,8 +1386,8 @@ UINT32 I_GetSongLength(void)
 
 boolean I_SetSongLoopPoint(UINT32 looppoint)
 {
-	(void)looppoint;
-	return false;
+        (void)looppoint;
+        return false;
 }
 
 UINT32 I_GetSongLoopPoint(void)
@@ -1432,8 +1431,6 @@ static void I_ResumeGME(void)
 
 boolean I_LoadSong(char *data, size_t len)
 {
-	(void)data;
-	(void)len;
 	return false;
 }
 
@@ -1495,7 +1492,6 @@ boolean I_FadeSongFromVolume(UINT8 target_volume, UINT8 source_volume, UINT32 ms
 	(void)target_volume;
 	(void)source_volume;
 	(void)ms;
-	(void)callback;
 	return false;
 }
 
@@ -1503,7 +1499,6 @@ boolean I_FadeSong(UINT8 target_volume, UINT32 ms, void (*callback)(void))
 {
 	(void)target_volume;
 	(void)ms;
-	(void)callback;
 	return false;
 }
 

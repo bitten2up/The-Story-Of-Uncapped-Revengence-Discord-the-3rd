@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
+// Copyright (C) 1999-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -22,9 +22,6 @@
 
 // Some global defines, that configure the game.
 #include "doomdef.h"
-
-#include "taglist.h"
-#include "m_fixed.h" // See the mapthing_t scale.
 
 //
 // Map level types.
@@ -48,9 +45,6 @@ enum
 	ML_REJECT,    // LUT, sector-sector visibility
 	ML_BLOCKMAP,  // LUT, motion clipping, walls/grid element
 };
-
-// Extra flag for objects.
-#define MTF_EXTRA 1
 
 // Reverse gravity flag for objects.
 #define MTF_OBJECTFLIP 2
@@ -133,9 +127,11 @@ typedef struct
 #define ML_EFFECT4             512
 #define ML_EFFECT5            1024
 
-#define ML_NETONLY           2048 // Apply effect only in netgames
-#define ML_NONET             4096 // Apply  effect only in single player games
-#define ML_EFFECT6           8192
+// New ones to disable lines for characters
+#define ML_NOSONIC           2048
+#define ML_NOTAILS           4096
+#define ML_NOKNUX            8192
+#define ML_NETONLY          14336 // all of the above
 
 // Bounce off walls!
 #define ML_BOUNCY           16384
@@ -196,27 +192,23 @@ typedef struct
 #pragma pack()
 #endif
 
-#define NUMMAPTHINGARGS 6
-#define NUMMAPTHINGSTRINGARGS 2
-
 // Thing definition, position, orientation and type,
 // plus visibility flags and attributes.
 typedef struct
 {
 	INT16 x, y;
-	INT16 angle, pitch, roll;
+	INT16 angle;
 	UINT16 type;
 	UINT16 options;
 	INT16 z;
 	UINT8 extrainfo;
-	taglist_t tags;
-	fixed_t scale;
-	INT32 args[NUMMAPTHINGARGS];
-	char *stringargs[NUMMAPTHINGSTRINGARGS];
 	struct mobj_s *mobj;
 } mapthing_t;
 
 #define ZSHIFT 4
+
+extern const char *Color_Names[MAXSKINCOLORS];
+extern const UINT8 Color_Opposite[MAXSKINCOLORS*2];
 
 #define NUMMAPS 1035
 

@@ -5,7 +5,7 @@
 //
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Portions Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 2014-2022 by Sonic Team Junior.
+// Copyright (C) 2014-2018 by Sonic Team Junior.
 //
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
@@ -102,12 +102,6 @@ typedef LPVOID (WINAPI *p_MapViewOfFile) (HANDLE, DWORD, DWORD, DWORD, SIZE_T);
 #endif
 #endif
 
-#if defined (__unix__) || (defined (UNIXCOMMON) && !defined (__APPLE__))
-#include <errno.h>
-#include <sys/wait.h>
-#define NEWSIGNALHANDLER
-#endif
-
 #ifndef NOMUMBLE
 #ifdef __linux__ // need -lrt
 #include <sys/mman.h>
@@ -137,18 +131,12 @@ typedef LPVOID (WINAPI *p_MapViewOfFile) (HANDLE, DWORD, DWORD, DWORD, SIZE_T);
 #include <errno.h>
 #endif
 
+// Locations for searching the srb2.srb
 #if defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON)
-#include <execinfo.h>
-#include <time.h>
-#define UNIXBACKTRACE
-#endif
-
-// Locations for searching the srb2.pk3
-#if defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON)
-#define DEFAULTWADLOCATION1 "/usr/local/share/games/SRB2"
-#define DEFAULTWADLOCATION2 "/usr/local/games/SRB2"
-#define DEFAULTWADLOCATION3 "/usr/share/games/SRB2"
-#define DEFAULTWADLOCATION4 "/usr/games/SRB2"
+#define DEFAULTWADLOCATION1 "/usr/local/share/games/SRB2-21"
+#define DEFAULTWADLOCATION2 "/usr/local/games/SRB2-21"
+#define DEFAULTWADLOCATION3 "/usr/share/games/SRB2-21"
+#define DEFAULTWADLOCATION4 "/usr/games/SRB2-21"
 #define DEFAULTSEARCHPATH1 "/usr/local/games"
 #define DEFAULTSEARCHPATH2 "/usr/games"
 #define DEFAULTSEARCHPATH3 "/usr/local"
@@ -161,7 +149,8 @@ typedef LPVOID (WINAPI *p_MapViewOfFile) (HANDLE, DWORD, DWORD, DWORD, SIZE_T);
 
 /**	\brief WAD file to look for
 */
-#define WADKEYWORD1 "srb2.pk3"
+#define WADKEYWORD1 "srb2.srb"
+#define WADKEYWORD2 "srb2.wad"
 /**	\brief holds wad path
 */
 static char returnWadPath[256];
@@ -173,7 +162,6 @@ static char returnWadPath[256];
 #include "../i_video.h"
 #include "../i_sound.h"
 #include "../i_system.h"
-#include "../i_threads.h"
 #include "../screen.h" //vid.WndParent
 #include "../d_net.h"
 #include "../g_game.h"
@@ -184,9 +172,6 @@ static char returnWadPath[256];
 #include "../i_joy.h"
 
 #include "../m_argv.h"
-
-#include "../r_main.h" // Frame interpolation/uncapped
-#include "../r_fps.h"
 
 #ifdef MAC_ALERT
 #include "macosx/mac_alert.h"
@@ -245,76 +230,13 @@ SDL_bool framebuffer = SDL_FALSE;
 
 UINT8 keyboard_started = false;
 
-#ifdef UNIXBACKTRACE
-#define STDERR_WRITE(string) if (fd != -1) I_OutputMsg("%s", string)
-#define CRASHLOG_WRITE(string) if (fd != -1) write(fd, string, strlen(string))
-#define CRASHLOG_STDERR_WRITE(string) \
-	if (fd != -1)\
-		write(fd, string, strlen(string));\
-	I_OutputMsg("%s", string)
-
-static void write_backtrace(INT32 signal)
-{
-	int fd = -1;
-	size_t size;
-	time_t rawtime;
-	struct tm timeinfo;
-
-	enum { BT_SIZE = 1024, STR_SIZE = 32 };
-	void *array[BT_SIZE];
-	char timestr[STR_SIZE];
-
-	const char *error = "An error occurred within SRB2! Send this stack trace to someone who can help!\n";
-	const char *error2 = "(Or find crash-log.txt in your SRB2 directory.)\n"; // Shown only to stderr.
-
-	fd = open(va("%s" PATHSEP "%s", srb2home, "crash-log.txt"), O_CREAT|O_APPEND|O_RDWR, S_IRUSR|S_IWUSR);
-
-	if (fd == -1)
-		I_OutputMsg("\nWARNING: Couldn't open crash log for writing! Make sure your permissions are correct. Please save the below report!\n");
-
-	// Get the current time as a string.
-	time(&rawtime);
-	localtime_r(&rawtime, &timeinfo);
-	strftime(timestr, STR_SIZE, "%a, %d %b %Y %T %z", &timeinfo);
-
-	CRASHLOG_WRITE("------------------------\n"); // Nice looking seperator
-
-	CRASHLOG_STDERR_WRITE("\n"); // Newline to look nice for both outputs.
-	CRASHLOG_STDERR_WRITE(error); // "Oops, SRB2 crashed" message
-	STDERR_WRITE(error2); // Tell the user where the crash log is.
-
-	// Tell the log when we crashed.
-	CRASHLOG_WRITE("Time of crash: ");
-	CRASHLOG_WRITE(timestr);
-	CRASHLOG_WRITE("\n");
-
-	// Give the crash log the cause and a nice 'Backtrace:' thing
-	// The signal is given to the user when the parent process sees we crashed.
-	CRASHLOG_WRITE("Cause: ");
-	CRASHLOG_WRITE(strsignal(signal));
-	CRASHLOG_WRITE("\n"); // Newline for the signal name
-
-	CRASHLOG_STDERR_WRITE("\nBacktrace:\n");
-
-	// Flood the output and log with the backtrace
-	size = backtrace(array, BT_SIZE);
-	backtrace_symbols_fd(array, size, fd);
-	backtrace_symbols_fd(array, size, STDERR_FILENO);
-
-	CRASHLOG_WRITE("\n"); // Write another newline to the log so it looks nice :)
-
-	close(fd);
-}
-#undef STDERR_WRITE
-#undef CRASHLOG_WRITE
-#undef CRASHLOG_STDERR_WRITE
-#endif // UNIXBACKTRACE
-
-static void I_ReportSignal(int num, int coredumped)
+FUNCNORETURN static ATTRNORETURN void signal_handler(INT32 num)
 {
 	//static char msg[] = "oh no! back to reality!\r\n";
 	const char *      sigmsg;
-	char msg[128];
+	char        sigdef[32];
+
+	D_QuitNetGame(); // Fix server freezes
 
 	switch (num)
 	{
@@ -340,46 +262,20 @@ static void I_ReportSignal(int num, int coredumped)
 		sigmsg = "SIGABRT - abnormal termination triggered by abort call";
 		break;
 	default:
-		sprintf(msg,"signal number %d", num);
-		if (coredumped)
-			sigmsg = 0;
-		else
-			sigmsg = msg;
+		sprintf(sigdef,"signal number %d", num);
+		sigmsg = sigdef;
 	}
 
-	if (coredumped)
-	{
-		if (sigmsg)
-			sprintf(msg, "%s (core dumped)", sigmsg);
-		else
-			strcat(msg, " (core dumped)");
+	I_OutputMsg("\nsignal_handler() error: %s\n", sigmsg);
 
-		sigmsg = msg;
-	}
-
-	I_OutputMsg("\nProcess killed by signal: %s\n\n", sigmsg);
-
-	if (!M_CheckParm("-dedicated"))
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-			"Process killed by signal",
-			sigmsg, NULL);
-}
-
-#ifndef NEWSIGNALHANDLER
-FUNCNORETURN static ATTRNORETURN void signal_handler(INT32 num)
-{
-	D_QuitNetGame(); // Fix server freezes
-	CL_AbortDownloadResume();
-#ifdef UNIXBACKTRACE
-	write_backtrace(num);
-#endif
-	I_ReportSignal(num, 0);
+	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+		"Signal caught",
+		sigmsg, NULL);
 	I_ShutdownSystem();
 	signal(num, SIG_DFL);               //default signal action
 	raise(num);
 	I_Quit();
 }
-#endif
 
 FUNCNORETURN static ATTRNORETURN void quit_handler(int num)
 {
@@ -552,7 +448,7 @@ static void I_StartupConsole(void)
 void I_GetConsoleEvents(void)
 {
 	// we use this when sending back commands
-	event_t ev = {0};
+	event_t ev = {0,0,0,0};
 	char key = 0;
 	ssize_t d;
 
@@ -574,7 +470,7 @@ void I_GetConsoleEvents(void)
 			tty_con.buffer[tty_con.cursor] = '\0';
 			tty_Back();
 		}
-		ev.key = KEY_BACKSPACE;
+		ev.data1 = KEY_BACKSPACE;
 	}
 	else if (key < ' ') // check if this is a control char
 	{
@@ -582,19 +478,19 @@ void I_GetConsoleEvents(void)
 		{
 			tty_Clear();
 			tty_con.cursor = 0;
-			ev.key = KEY_ENTER;
+			ev.data1 = KEY_ENTER;
 		}
 		else return;
 	}
 	else
 	{
 		// push regular character
-		ev.key = tty_con.buffer[tty_con.cursor] = key;
+		ev.data1 = tty_con.buffer[tty_con.cursor] = key;
 		tty_con.cursor++;
 		// print the current line (this is differential)
 		d = write(STDOUT_FILENO, &key, 1);
 	}
-	if (ev.key) D_PostEvent(&ev);
+	if (ev.data1) D_PostEvent(&ev);
 	//tty_FlushIn();
 	(void)d;
 }
@@ -628,18 +524,20 @@ static void Impl_HandleKeyboardConsoleEvent(KEY_EVENT_RECORD evt, HANDLE co)
 		{
 			case VK_ESCAPE:
 			case VK_TAB:
-				event.key = KEY_NULL;
+				event.data1 = KEY_NULL;
+				break;
+			case VK_SHIFT:
+				event.data1 = KEY_LSHIFT;
 				break;
 			case VK_RETURN:
 				entering_con_command = false;
-				/* FALLTHRU */
+				// Fall through.
 			default:
-				//event.key = MapVirtualKey(evt.wVirtualKeyCode,2); // convert in to char
-				event.key = evt.uChar.AsciiChar;
+				event.data1 = MapVirtualKey(evt.wVirtualKeyCode,2); // convert in to char
 		}
 		if (co != INVALID_HANDLE_VALUE && GetFileType(co) == FILE_TYPE_CHAR && GetConsoleMode(co, &t))
 		{
-			if (event.key && event.key != KEY_LSHIFT && event.key != KEY_RSHIFT)
+			if (event.data1 && event.data1 != KEY_LSHIFT && event.data1 != KEY_RSHIFT)
 			{
 #ifdef _UNICODE
 				WriteConsole(co, &evt.uChar.UnicodeChar, 1, &t, NULL);
@@ -654,7 +552,19 @@ static void Impl_HandleKeyboardConsoleEvent(KEY_EVENT_RECORD evt, HANDLE co)
 			}
 		}
 	}
-	if (event.key) D_PostEvent(&event);
+	else
+	{
+		event.type = ev_keyup;
+		switch (evt.wVirtualKeyCode)
+		{
+			case VK_SHIFT:
+				event.data1 = KEY_LSHIFT;
+				break;
+			default:
+				break;
+		}
+	}
+	if (event.data1) D_PostEvent(&event);
 }
 
 void I_GetConsoleEvents(void)
@@ -741,7 +651,7 @@ static inline void I_ShutdownConsole(void){}
 //
 // StartupKeyboard
 //
-static void I_RegisterSignals (void)
+void I_StartupKeyboard (void)
 {
 #ifdef SIGINT
 	signal(SIGINT , quit_handler);
@@ -755,35 +665,11 @@ static void I_RegisterSignals (void)
 
 	// If these defines don't exist,
 	// then compilation would have failed above us...
-#ifndef NEWSIGNALHANDLER
 	signal(SIGILL , signal_handler);
 	signal(SIGSEGV , signal_handler);
 	signal(SIGABRT , signal_handler);
 	signal(SIGFPE , signal_handler);
-#endif
 }
-
-#ifdef NEWSIGNALHANDLER
-static void signal_handler_child(INT32 num)
-{
-#ifdef UNIXBACKTRACE
-	write_backtrace(num);
-#endif
-
-	signal(num, SIG_DFL);               //default signal action
-	raise(num);
-}
-
-static void I_RegisterChildSignals(void)
-{
-	// If these defines don't exist,
-	// then compilation would have failed above us...
-	signal(SIGILL , signal_handler_child);
-	signal(SIGSEGV , signal_handler_child);
-	signal(SIGABRT , signal_handler_child);
-	signal(SIGFPE , signal_handler_child);
-}
-#endif
 
 //
 //I_OutputMsg
@@ -791,7 +677,7 @@ static void I_RegisterChildSignals(void)
 void I_OutputMsg(const char *fmt, ...)
 {
 	size_t len;
-	char txt[8192];
+	XBOXSTATIC char txt[8192];
 	va_list  argptr;
 
 	va_start(argptr,fmt);
@@ -919,7 +805,7 @@ INT32 I_GetKey (void)
 		ev = &events[eventtail];
 		if (ev->type == ev_keydown || ev->type == ev_console)
 		{
-			rc = ev->key;
+			rc = ev->data1;
 			continue;
 		}
 	}
@@ -942,23 +828,6 @@ void I_JoyScale2(void)
 	JoyInfo2.scale = Joystick2.bGamepadStyle?1:cv_joyscale2.value;
 }
 
-// Cheat to get the device index for a joystick handle
-INT32 I_GetJoystickDeviceIndex(SDL_Joystick *dev)
-{
-	INT32 i, count = SDL_NumJoysticks();
-
-	for (i = 0; dev && i < count; i++)
-	{
-		SDL_Joystick *test = SDL_JoystickOpen(i);
-		if (test && test == dev)
-			return i;
-		else if (JoyInfo.dev != test && JoyInfo2.dev != test)
-			SDL_JoystickClose(test);
-	}
-
-	return -1;
-}
-
 /**	\brief Joystick 1 buttons states
 */
 static UINT64 lastjoybuttons = 0;
@@ -974,27 +843,27 @@ static UINT64 lastjoyhats = 0;
 
 
 */
-void I_ShutdownJoystick(void)
+static void I_ShutdownJoystick(void)
 {
 	INT32 i;
 	event_t event;
 	event.type=ev_keyup;
-	event.x = 0;
-	event.y = 0;
+	event.data2 = 0;
+	event.data3 = 0;
 
 	lastjoybuttons = lastjoyhats = 0;
 
 	// emulate the up of all joystick buttons
 	for (i=0;i<JOYBUTTONS;i++)
 	{
-		event.key=KEY_JOY1+i;
+		event.data1=KEY_JOY1+i;
 		D_PostEvent(&event);
 	}
 
 	// emulate the up of all joystick hats
 	for (i=0;i<JOYHATS*4;i++)
 	{
-		event.key=KEY_HAT1+i;
+		event.data1=KEY_HAT1+i;
 		D_PostEvent(&event);
 	}
 
@@ -1002,19 +871,25 @@ void I_ShutdownJoystick(void)
 	event.type = ev_joystick;
 	for (i=0;i<JOYAXISSET; i++)
 	{
-		event.key = i;
+		event.data1 = i;
 		D_PostEvent(&event);
 	}
 
 	joystick_started = 0;
 	JoyReset(&JoyInfo);
-
-	// don't shut down the subsystem here, because hotplugging
+	if (!joystick_started && !joystick2_started && SDL_WasInit(SDL_INIT_JOYSTICK) == SDL_INIT_JOYSTICK)
+	{
+		SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
+		if (cv_usejoystick.value == 0)
+		{
+			I_OutputMsg("I_Joystick: SDL's Joystick system has been shutdown\n");
+		}
+	}
 }
 
 void I_GetJoystickEvents(void)
 {
-	static event_t event = {0,0,0,0,false};
+	static event_t event = {0,0,0,0};
 	INT32 i = 0;
 	UINT64 joyhats = 0;
 #if 0
@@ -1051,7 +926,7 @@ void I_GetJoystickEvents(void)
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.key = KEY_JOY1 + i;
+				event.data1 = KEY_JOY1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -1082,7 +957,7 @@ void I_GetJoystickEvents(void)
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.key = KEY_HAT1 + i;
+				event.data1 = KEY_HAT1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -1094,7 +969,7 @@ void I_GetJoystickEvents(void)
 
 	for (i = JOYAXISSET - 1; i >= 0; i--)
 	{
-		event.key = i;
+		event.data1 = i;
 		if (i*2 + 1 <= JoyInfo.axises)
 			axisx = SDL_JoystickGetAxis(JoyInfo.dev, i*2 + 0);
 		else axisx = 0;
@@ -1112,15 +987,15 @@ void I_GetJoystickEvents(void)
 		{
 			// gamepad control type, on or off, live or die
 			if (axisx < -(JOYAXISRANGE/2))
-				event.x = -1;
+				event.data2 = -1;
 			else if (axisx > (JOYAXISRANGE/2))
-				event.x = 1;
-			else event.x = 0;
+				event.data2 = 1;
+			else event.data2 = 0;
 			if (axisy < -(JOYAXISRANGE/2))
-				event.y = -1;
+				event.data3 = -1;
 			else if (axisy > (JOYAXISRANGE/2))
-				event.y = 1;
-			else event.y = 0;
+				event.data3 = 1;
+			else event.data3 = 0;
 		}
 		else
 		{
@@ -1134,8 +1009,8 @@ void I_GetJoystickEvents(void)
 #endif
 
 			// analog control style , just send the raw data
-			event.x = axisx; // x axis
-			event.y = axisy; // y axis
+			event.data2 = axisx; // x axis
+			event.data3 = axisy; // y axis
 		}
 		D_PostEvent(&event);
 	}
@@ -1150,66 +1025,74 @@ void I_GetJoystickEvents(void)
 
 
 */
-static int joy_open(int joyindex)
+static int joy_open(const char *fname)
 {
-	SDL_Joystick *newdev = NULL;
+	int joyindex = atoi(fname);
 	int num_joy = 0;
+	int i;
 
-	if (SDL_WasInit(SDL_INIT_JOYSTICK) == 0)
+	if (joystick_started == 0 && joystick2_started == 0)
 	{
-		CONS_Printf(M_GetText("Joystick subsystem not started\n"));
-		return -1;
-	}
+		if (SDL_InitSubSystem(SDL_INIT_JOYSTICK) == -1)
+		{
+			CONS_Printf(M_GetText("Couldn't initialize joystick: %s\n"), SDL_GetError());
+			return -1;
+		}
+		else
+		{
+			num_joy = SDL_NumJoysticks();
+		}
 
-	if (joyindex <= 0)
-		return -1;
+		if (num_joy < joyindex)
+		{
+			CONS_Printf(M_GetText("Cannot use joystick #%d/(%s), it doesn't exist\n"),joyindex,fname);
+			for (i = 0; i < num_joy; i++)
+				CONS_Printf("#%d/(%s)\n", i+1, SDL_JoystickNameForIndex(i));
+			I_ShutdownJoystick();
+			return -1;
+		}
+	}
+	else
+	{
+		JoyReset(&JoyInfo);
+		//I_ShutdownJoystick();
+		//joy_open(fname);
+	}
 
 	num_joy = SDL_NumJoysticks();
 
-	if (num_joy == 0)
+	if (joyindex <= 0 || num_joy == 0 || JoyInfo.oldjoy == joyindex)
 	{
-		CONS_Printf("%s", M_GetText("Found no joysticks on this system\n"));
-		return -1;
+//		I_OutputMsg("Unable to use that joystick #(%s), non-number\n",fname);
+		if (num_joy != 0)
+		{
+			CONS_Printf(M_GetText("Found %d joysticks on this system\n"), num_joy);
+			for (i = 0; i < num_joy; i++)
+				CONS_Printf("#%d/(%s)\n", i+1, SDL_JoystickNameForIndex(i));
+		}
+		else
+			CONS_Printf("%s", M_GetText("Found no joysticks on this system\n"));
+		if (joyindex <= 0 || num_joy == 0) return 0;
 	}
 
-	newdev = SDL_JoystickOpen(joyindex-1);
-
-	// Handle the edge case where the device <-> joystick index assignment can change due to hotplugging
-	// This indexing is SDL's responsibility and there's not much we can do about it.
-	//
-	// Example:
-	// 1. Plug Controller A   -> Index 0 opened
-	// 2. Plug Controller B   -> Index 1 opened
-	// 3. Unplug Controller A -> Index 0 closed, Index 1 active
-	// 4. Unplug Controller B -> Index 0 inactive, Index 1 closed
-	// 5. Plug Controller B   -> Index 0 opened
-	// 6. Plug Controller A   -> Index 0 REPLACED, opened as Controller A; Index 1 is now Controller B
-	if (JoyInfo.dev)
-	{
-		if (JoyInfo.dev == newdev // same device, nothing to do
-			|| (newdev == NULL && SDL_JoystickGetAttached(JoyInfo.dev))) // we failed, but already have a working device
-			return JoyInfo.axises;
-		// Else, we're changing devices, so send neutral joy events
-		CONS_Debug(DBG_GAMELOGIC, "Joystick1 device is changing; resetting events...\n");
-		I_ShutdownJoystick();
-	}
-
-	JoyInfo.dev = newdev;
+	JoyInfo.dev = SDL_JoystickOpen(joyindex-1);
 
 	if (JoyInfo.dev == NULL)
 	{
-		CONS_Debug(DBG_GAMELOGIC, M_GetText("Joystick1: Couldn't open device - %s\n"), SDL_GetError());
+		CONS_Printf(M_GetText("Couldn't open joystick: %s\n"), SDL_GetError());
+		I_ShutdownJoystick();
 		return -1;
 	}
 	else
 	{
-		CONS_Debug(DBG_GAMELOGIC, M_GetText("Joystick1: %s\n"), SDL_JoystickName(JoyInfo.dev));
+		CONS_Printf(M_GetText("Joystick: %s\n"), SDL_JoystickName(JoyInfo.dev));
 		JoyInfo.axises = SDL_JoystickNumAxes(JoyInfo.dev);
 		if (JoyInfo.axises > JOYAXISSET*2)
 			JoyInfo.axises = JOYAXISSET*2;
-	/*		if (joyaxes<2)
+/*		if (joyaxes<2)
 		{
 			I_OutputMsg("Not enought axes?\n");
+			I_ShutdownJoystick();
 			return 0;
 		}*/
 
@@ -1244,27 +1127,27 @@ static UINT64 lastjoy2hats = 0;
 
 	\return	void
 */
-void I_ShutdownJoystick2(void)
+static void I_ShutdownJoystick2(void)
 {
 	INT32 i;
 	event_t event;
 	event.type = ev_keyup;
-	event.x = 0;
-	event.y = 0;
+	event.data2 = 0;
+	event.data3 = 0;
 
 	lastjoy2buttons = lastjoy2hats = 0;
 
 	// emulate the up of all joystick buttons
 	for (i = 0; i < JOYBUTTONS; i++)
 	{
-		event.key = KEY_2JOY1 + i;
+		event.data1 = KEY_2JOY1 + i;
 		D_PostEvent(&event);
 	}
 
 	// emulate the up of all joystick hats
 	for (i = 0; i < JOYHATS*4; i++)
 	{
-		event.key = KEY_2HAT1 + i;
+		event.data1 = KEY_2HAT1 + i;
 		D_PostEvent(&event);
 	}
 
@@ -1272,19 +1155,25 @@ void I_ShutdownJoystick2(void)
 	event.type = ev_joystick2;
 	for (i = 0; i < JOYAXISSET; i++)
 	{
-		event.key = i;
+		event.data1 = i;
 		D_PostEvent(&event);
 	}
 
 	joystick2_started = 0;
 	JoyReset(&JoyInfo2);
-
-	// don't shut down the subsystem here, because hotplugging
+	if (!joystick_started && !joystick2_started && SDL_WasInit(SDL_INIT_JOYSTICK) == SDL_INIT_JOYSTICK)
+	{
+		SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
+		if (cv_usejoystick2.value == 0)
+		{
+			DEBFILE("I_Joystick2: SDL's Joystick system has been shutdown\n");
+		}
+	}
 }
 
 void I_GetJoystick2Events(void)
 {
-	static event_t event = {0,0,0,0,false};
+	static event_t event = {0,0,0,0};
 	INT32 i = 0;
 	UINT64 joyhats = 0;
 #if 0
@@ -1323,7 +1212,7 @@ void I_GetJoystick2Events(void)
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.key = KEY_2JOY1 + i;
+				event.data1 = KEY_2JOY1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -1354,7 +1243,7 @@ void I_GetJoystick2Events(void)
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.key = KEY_2HAT1 + i;
+				event.data1 = KEY_2HAT1 + i;
 				D_PostEvent(&event);
 			}
 		}
@@ -1366,7 +1255,7 @@ void I_GetJoystick2Events(void)
 
 	for (i = JOYAXISSET - 1; i >= 0; i--)
 	{
-		event.key = i;
+		event.data1 = i;
 		if (i*2 + 1 <= JoyInfo2.axises)
 			axisx = SDL_JoystickGetAxis(JoyInfo2.dev, i*2 + 0);
 		else axisx = 0;
@@ -1382,17 +1271,17 @@ void I_GetJoystick2Events(void)
 		{
 			// gamepad control type, on or off, live or die
 			if (axisx < -(JOYAXISRANGE/2))
-				event.x = -1;
+				event.data2 = -1;
 			else if (axisx > (JOYAXISRANGE/2))
-				event.x = 1;
+				event.data2 = 1;
 			else
-				event.x = 0;
+				event.data2 = 0;
 			if (axisy < -(JOYAXISRANGE/2))
-				event.y = -1;
+				event.data3 = -1;
 			else if (axisy > (JOYAXISRANGE/2))
-				event.y = 1;
+				event.data3 = 1;
 			else
-				event.y = 0;
+				event.data3 = 0;
 		}
 		else
 		{
@@ -1406,8 +1295,8 @@ void I_GetJoystick2Events(void)
 #endif
 
 			// analog control style , just send the raw data
-			event.x = axisx; // x axis
-			event.y = axisy; // y axis
+			event.data2 = axisx; // x axis
+			event.data3 = axisy; // y axis
 		}
 		D_PostEvent(&event);
 	}
@@ -1422,66 +1311,72 @@ void I_GetJoystick2Events(void)
 
 
 */
-static int joy_open2(int joyindex)
+static int joy_open2(const char *fname)
 {
-	SDL_Joystick *newdev = NULL;
+	int joyindex = atoi(fname);
 	int num_joy = 0;
+	int i;
 
-	if (SDL_WasInit(SDL_INIT_JOYSTICK) == 0)
+	if (joystick_started == 0 && joystick2_started == 0)
 	{
-		CONS_Printf(M_GetText("Joystick subsystem not started\n"));
-		return -1;
-	}
+		if (SDL_InitSubSystem(SDL_INIT_JOYSTICK) == -1)
+		{
+			CONS_Printf(M_GetText("Couldn't initialize joystick: %s\n"), SDL_GetError());
+			return -1;
+		}
+		else
+			num_joy = SDL_NumJoysticks();
 
-	if (joyindex <= 0)
-		return -1;
+		if (num_joy < joyindex)
+		{
+			CONS_Printf(M_GetText("Cannot use joystick #%d/(%s), it doesn't exist\n"),joyindex,fname);
+			for (i = 0; i < num_joy; i++)
+				CONS_Printf("#%d/(%s)\n", i+1, SDL_JoystickNameForIndex(i));
+			I_ShutdownJoystick2();
+			return -1;
+		}
+	}
+	else
+	{
+		JoyReset(&JoyInfo2);
+		//I_ShutdownJoystick();
+		//joy_open(fname);
+	}
 
 	num_joy = SDL_NumJoysticks();
 
-	if (num_joy == 0)
+	if (joyindex <= 0 || num_joy == 0 || JoyInfo2.oldjoy == joyindex)
 	{
-		CONS_Printf("%s", M_GetText("Found no joysticks on this system\n"));
-		return -1;
+//		I_OutputMsg("Unable to use that joystick #(%s), non-number\n",fname);
+		if (num_joy != 0)
+		{
+			CONS_Printf(M_GetText("Found %d joysticks on this system\n"), num_joy);
+			for (i = 0; i < num_joy; i++)
+				CONS_Printf("#%d/(%s)\n", i+1, SDL_JoystickNameForIndex(i));
+		}
+		else
+			CONS_Printf("%s", M_GetText("Found no joysticks on this system\n"));
+		if (joyindex <= 0 || num_joy == 0) return 0;
 	}
 
-	newdev = SDL_JoystickOpen(joyindex-1);
+	JoyInfo2.dev = SDL_JoystickOpen(joyindex-1);
 
-	// Handle the edge case where the device <-> joystick index assignment can change due to hotplugging
-	// This indexing is SDL's responsibility and there's not much we can do about it.
-	//
-	// Example:
-	// 1. Plug Controller A   -> Index 0 opened
-	// 2. Plug Controller B   -> Index 1 opened
-	// 3. Unplug Controller A -> Index 0 closed, Index 1 active
-	// 4. Unplug Controller B -> Index 0 inactive, Index 1 closed
-	// 5. Plug Controller B   -> Index 0 opened
-	// 6. Plug Controller A   -> Index 0 REPLACED, opened as Controller A; Index 1 is now Controller B
-	if (JoyInfo2.dev)
+	if (!JoyInfo2.dev)
 	{
-		if (JoyInfo2.dev == newdev // same device, nothing to do
-			|| (newdev == NULL && SDL_JoystickGetAttached(JoyInfo2.dev))) // we failed, but already have a working device
-			return JoyInfo.axises;
-		// Else, we're changing devices, so send neutral joy events
-		CONS_Debug(DBG_GAMELOGIC, "Joystick2 device is changing; resetting events...\n");
+		CONS_Printf(M_GetText("Couldn't open joystick2: %s\n"), SDL_GetError());
 		I_ShutdownJoystick2();
-	}
-
-	JoyInfo2.dev = newdev;
-
-	if (JoyInfo2.dev == NULL)
-	{
-		CONS_Debug(DBG_GAMELOGIC, M_GetText("Joystick2: couldn't open device - %s\n"), SDL_GetError());
 		return -1;
 	}
 	else
 	{
-		CONS_Debug(DBG_GAMELOGIC, M_GetText("Joystick2: %s\n"), SDL_JoystickName(JoyInfo2.dev));
+		CONS_Printf(M_GetText("Joystick2: %s\n"), SDL_JoystickName(JoyInfo2.dev));
 		JoyInfo2.axises = SDL_JoystickNumAxes(JoyInfo2.dev);
 		if (JoyInfo2.axises > JOYAXISSET*2)
 			JoyInfo2.axises = JOYAXISSET*2;
-/*		if (joyaxes<2)
+/*		if (joyaxes < 2)
 		{
 			I_OutputMsg("Not enought axes?\n");
+			I_ShutdownJoystick2();
 			return 0;
 		}*/
 
@@ -1506,11 +1401,7 @@ static int joy_open2(int joyindex)
 //
 void I_InitJoystick(void)
 {
-	SDL_Joystick *newjoy = NULL;
-
-	//I_ShutdownJoystick();
-	if (M_CheckParm("-nojoy"))
-		return;
+	I_ShutdownJoystick();
 
 	if (M_CheckParm("-noxinput"))
 		SDL_SetHintWithPriority("SDL_XINPUT_ENABLED", "0", SDL_HINT_OVERRIDE);
@@ -1518,48 +1409,21 @@ void I_InitJoystick(void)
 	if (M_CheckParm("-nohidapi"))
 		SDL_SetHintWithPriority("SDL_JOYSTICK_HIDAPI", "0", SDL_HINT_OVERRIDE);
 
-	if (SDL_WasInit(SDL_INIT_JOYSTICK) == 0)
-	{
-		CONS_Printf("I_InitJoystick()...\n");
-
-		if (SDL_InitSubSystem(SDL_INIT_JOYSTICK) == -1)
-		{
-			CONS_Printf(M_GetText("Couldn't initialize joystick: %s\n"), SDL_GetError());
-			return;
-		}
-	}
-
-	if (cv_usejoystick.value)
-		newjoy = SDL_JoystickOpen(cv_usejoystick.value-1);
-
-	if (newjoy && JoyInfo2.dev == newjoy) // don't override an active device
-		cv_usejoystick.value = I_GetJoystickDeviceIndex(JoyInfo.dev) + 1;
-	else if (newjoy && joy_open(cv_usejoystick.value) != -1)
-	{
-		// SDL's device indexes are unstable, so cv_usejoystick may not match
-		// the actual device index. So let's cheat a bit and find the device's current index.
-		JoyInfo.oldjoy = I_GetJoystickDeviceIndex(JoyInfo.dev) + 1;
-		joystick_started = 1;
-	}
+	if (!strcmp(cv_usejoystick.string, "0") || M_CheckParm("-nojoy"))
+		return;
+	if (joy_open(cv_usejoystick.string) != -1)
+		JoyInfo.oldjoy = atoi(cv_usejoystick.string);
 	else
 	{
-		if (JoyInfo.oldjoy)
-			I_ShutdownJoystick();
 		cv_usejoystick.value = 0;
-		joystick_started = 0;
+		return;
 	}
-
-	if (JoyInfo.dev != newjoy && JoyInfo2.dev != newjoy)
-		SDL_JoystickClose(newjoy);
+	joystick_started = 1;
 }
 
 void I_InitJoystick2(void)
 {
-	SDL_Joystick *newjoy = NULL;
-
-	//I_ShutdownJoystick2();
-	if (M_CheckParm("-nojoy"))
-		return;
+	I_ShutdownJoystick2();
 
 	if (M_CheckParm("-noxinput"))
 		SDL_SetHintWithPriority("SDL_XINPUT_ENABLED", "0", SDL_HINT_OVERRIDE);
@@ -1567,77 +1431,64 @@ void I_InitJoystick2(void)
 	if (M_CheckParm("-nohidapi"))
 		SDL_SetHintWithPriority("SDL_JOYSTICK_HIDAPI", "0", SDL_HINT_OVERRIDE);
 
-	if (SDL_WasInit(SDL_INIT_JOYSTICK) == 0)
-	{
-		CONS_Printf("I_InitJoystick2()...\n");
-
-		if (SDL_InitSubSystem(SDL_INIT_JOYSTICK) == -1)
-		{
-			CONS_Printf(M_GetText("Couldn't initialize joystick: %s\n"), SDL_GetError());
-			return;
-		}
-	}
-
-	if (cv_usejoystick2.value)
-		newjoy = SDL_JoystickOpen(cv_usejoystick2.value-1);
-
-	if (newjoy && JoyInfo.dev == newjoy) // don't override an active device
-		cv_usejoystick2.value = I_GetJoystickDeviceIndex(JoyInfo2.dev) + 1;
-	else if (newjoy && joy_open2(cv_usejoystick2.value) != -1)
-	{
-		// SDL's device indexes are unstable, so cv_usejoystick may not match
-		// the actual device index. So let's cheat a bit and find the device's current index.
-		JoyInfo2.oldjoy = I_GetJoystickDeviceIndex(JoyInfo2.dev) + 1;
-		joystick2_started = 1;
-	}
+	if (!strcmp(cv_usejoystick2.string, "0") || M_CheckParm("-nojoy"))
+		return;
+	if (joy_open2(cv_usejoystick2.string) != -1)
+		JoyInfo2.oldjoy = atoi(cv_usejoystick2.string);
 	else
 	{
-		if (JoyInfo2.oldjoy)
-			I_ShutdownJoystick2();
 		cv_usejoystick2.value = 0;
-		joystick2_started = 0;
+		return;
 	}
-
-	if (JoyInfo.dev != newjoy && JoyInfo2.dev != newjoy)
-		SDL_JoystickClose(newjoy);
+	joystick2_started = 1;
 }
 
 static void I_ShutdownInput(void)
 {
-	// Yes, the name is misleading: these send neutral events to
-	// clean up the unplugged joystick's input
-	// Note these methods are internal to this file, not called elsewhere.
-	I_ShutdownJoystick();
-	I_ShutdownJoystick2();
-
 	if (SDL_WasInit(SDL_INIT_JOYSTICK) == SDL_INIT_JOYSTICK)
 	{
-		CONS_Printf("Shutting down joy system\n");
+		JoyReset(&JoyInfo);
+		JoyReset(&JoyInfo2);
 		SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
-		I_OutputMsg("I_Joystick: SDL's Joystick system has been shutdown\n");
 	}
+
 }
 
 INT32 I_NumJoys(void)
 {
 	INT32 numjoy = 0;
-	if (SDL_WasInit(SDL_INIT_JOYSTICK) == SDL_INIT_JOYSTICK)
+	if (SDL_WasInit(SDL_INIT_JOYSTICK) == 0)
+	{
+		if (SDL_InitSubSystem(SDL_INIT_JOYSTICK) != -1)
+			numjoy = SDL_NumJoysticks();
+		SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
+	}
+	else
 		numjoy = SDL_NumJoysticks();
 	return numjoy;
 }
 
-static char joyname[255]; // joystick name is straight from the driver
+static char joyname[255]; // MAX_PATH; joystick name is straight from the driver
 
 const char *I_GetJoyName(INT32 joyindex)
 {
 	const char *tempname = NULL;
-	joyname[0] = 0;
 	joyindex--; //SDL's Joystick System starts at 0, not 1
-	if (SDL_WasInit(SDL_INIT_JOYSTICK) == SDL_INIT_JOYSTICK)
+	if (SDL_WasInit(SDL_INIT_JOYSTICK) == 0)
+	{
+		if (SDL_InitSubSystem(SDL_INIT_JOYSTICK) != -1)
+		{
+			tempname = SDL_JoystickNameForIndex(joyindex);
+			if (tempname)
+				strncpy(joyname, tempname, 254);
+		}
+		SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
+	}
+	else
 	{
 		tempname = SDL_JoystickNameForIndex(joyindex);
 		if (tempname)
-			strncpy(joyname, tempname, 255);
+			strncpy(joyname, tempname, 254);
 	}
 	return joyname;
 }
@@ -1806,7 +1657,7 @@ void I_GetMouseEvents(void)
 					if (!(button & (1<<j))) //keyup
 					{
 						event.type = ev_keyup;
-						event.key = KEY_2MOUSE1+j;
+						event.data1 = KEY_2MOUSE1+j;
 						D_PostEvent(&event);
 						om2b ^= 1 << j;
 					}
@@ -1816,18 +1667,18 @@ void I_GetMouseEvents(void)
 					if (button & (1<<j))
 					{
 						event.type = ev_keydown;
-						event.key = KEY_2MOUSE1+j;
+						event.data1 = KEY_2MOUSE1+j;
 						D_PostEvent(&event);
 						om2b ^= 1 << j;
 					}
 				}
 			}
-			event.x = ((SINT8)mdata[1])+((SINT8)mdata[3]);
-			event.y = ((SINT8)mdata[2])+((SINT8)mdata[4]);
-			if (event.x && event.y)
+			event.data2 = ((SINT8)mdata[1])+((SINT8)mdata[3]);
+			event.data3 = ((SINT8)mdata[2])+((SINT8)mdata[4]);
+			if (event.data2 && event.data3)
 			{
 				event.type = ev_mouse2;
-				event.key = 0;
+				event.data1 = 0;
 				D_PostEvent(&event);
 			}
 		}
@@ -1869,7 +1720,7 @@ static void I_ShutdownMouse2(void)
 	for (i = 0; i < MOUSEBUTTONS; i++)
 	{
 		event.type = ev_keyup;
-		event.key = KEY_2MOUSE1+i;
+		event.data1 = KEY_2MOUSE1+i;
 		D_PostEvent(&event);
 	}
 
@@ -1960,7 +1811,7 @@ void I_GetMouseEvents(void)
 					event.type = ev_keydown;
 				else
 					event.type = ev_keyup;
-				event.key = KEY_2MOUSE1+i;
+				event.data1 = KEY_2MOUSE1+i;
 				D_PostEvent(&event);
 			}
 	}
@@ -1968,10 +1819,10 @@ void I_GetMouseEvents(void)
 	if (handlermouse2x != 0 || handlermouse2y != 0)
 	{
 		event.type = ev_mouse2;
-		event.key = 0;
-//		event.key = buttons; // not needed
-		event.x = handlermouse2x << 1;
-		event.y = handlermouse2y << 1;
+		event.data1 = 0;
+//		event.data1 = buttons; // not needed
+		event.data2 = handlermouse2x << 1;
+		event.data3 = -handlermouse2y << 1;
 		handlermouse2x = 0;
 		handlermouse2y = 0;
 
@@ -2136,265 +1987,123 @@ ticcmd_t *I_BaseTiccmd2(void)
 	return &emptycmd2;
 }
 
+#if defined (_WIN32)
+static HMODULE winmm = NULL;
+static DWORD starttickcount = 0; // hack for win2k time bug
+static p_timeGetTime pfntimeGetTime = NULL;
+
+// ---------
+// I_GetTime
+// Use the High Resolution Timer if available,
+// else use the multimedia timer which has 1 millisecond precision on Windowz 95,
+// but lower precision on Windows NT
+// ---------
+
+tic_t I_GetTime(void)
+{
+	tic_t newtics = 0;
+
+	if (!starttickcount) // high precision timer
+	{
+		LARGE_INTEGER currtime; // use only LowPart if high resolution counter is not available
+		static LARGE_INTEGER basetime = {{0, 0}};
+
+		// use this if High Resolution timer is found
+		static LARGE_INTEGER frequency;
+
+		if (!basetime.LowPart)
+		{
+			if (!QueryPerformanceFrequency(&frequency))
+				frequency.QuadPart = 0;
+			else
+				QueryPerformanceCounter(&basetime);
+		}
+
+		if (frequency.LowPart && QueryPerformanceCounter(&currtime))
+		{
+			newtics = (INT32)((currtime.QuadPart - basetime.QuadPart) * NEWTICRATE
+				/ frequency.QuadPart);
+		}
+		else if (pfntimeGetTime)
+		{
+			currtime.LowPart = pfntimeGetTime();
+			if (!basetime.LowPart)
+				basetime.LowPart = currtime.LowPart;
+			newtics = ((currtime.LowPart - basetime.LowPart)/(1000/NEWTICRATE));
+		}
+	}
+	else
+		newtics = (GetTickCount() - starttickcount)/(1000/NEWTICRATE);
+
+	return newtics;
+}
+
+static void I_ShutdownTimer(void)
+{
+	pfntimeGetTime = NULL;
+	if (winmm)
+	{
+		p_timeEndPeriod pfntimeEndPeriod = (p_timeEndPeriod)(LPVOID)GetProcAddress(winmm, "timeEndPeriod");
+		if (pfntimeEndPeriod)
+			pfntimeEndPeriod(1);
+		FreeLibrary(winmm);
+		winmm = NULL;
+	}
+}
+#else
 //
 // I_GetTime
 // returns time in 1/TICRATE second tics
 //
-
-static Uint64 timer_frequency;
-
-static double tic_frequency;
-static Uint64 tic_epoch;
-static double elapsed_tics;
-
-static void UpdateElapsedTics(void)
+tic_t I_GetTime (void)
 {
-	const Uint64 now = SDL_GetPerformanceCounter();
+	static Uint64 basetime = 0;
+		   Uint64 ticks = SDL_GetTicks();
 
-	elapsed_tics += (now - tic_epoch) / tic_frequency;
-	tic_epoch = now; // moving epoch
-}
+	if (!basetime)
+		basetime = ticks;
 
-tic_t I_GetTime(void)
-{
-	UpdateElapsedTics();
-	return (tic_t) floor(elapsed_tics);
-}
+	ticks -= basetime;
 
-float I_GetTimeFrac(void)
-{
-	UpdateElapsedTics();
-	return elapsed_tics;
+	ticks = (ticks*TICRATE);
+
+	ticks = (ticks/1000);
+
+	return (tic_t)ticks;
 }
+#endif
 
 //
-// I_GetPreciseTime
-// returns time in precise_t
-//
-precise_t I_GetPreciseTime(void)
-{
-	return SDL_GetPerformanceCounter();
-}
-
-int I_PreciseToMicros(precise_t d)
-{
-	// d is going to be converted into a double. So remove the highest bits
-	// to avoid loss of precision in the lower bits, for the (probably rare) case
-	// that the higher bits are actually used.
-	d &= ((precise_t)1 << 53) - 1; // The mantissa of a double can handle 53 bits at most.
-	// The resulting double from the calculation is converted first to UINT64 to avoid overflow,
-	// which is undefined behaviour when converting floating point values to integers.
-	return (int)(UINT64)(d / (timer_frequency / 1000000.0));
-}
-
-//
-// I_GetFrameTime
-// returns time in 1/fpscap second tics
-//
-
-static UINT32 frame_rate;
-
-static double frame_frequency;
-static UINT64 frame_epoch;
-static double elapsed_frames;
-
-static void I_InitFrameTime(const UINT64 now, const UINT32 cap)
-{
-	frame_rate = cap;
-	frame_epoch = now;
-
-	//elapsed_frames = 0.0;
-
-	if (frame_rate == 0)
-	{
-		// Shouldn't be used, but just in case...?
-		frame_frequency = 1.0;
-		return;
-	}
-
-	frame_frequency = timer_frequency / (double)frame_rate;
-}
-
-double I_GetFrameTime(void)
-{
-	const UINT64 now = SDL_GetPerformanceCounter();
-	const UINT32 cap = R_GetFramerateCap();
-
-	if (cap != frame_rate)
-	{
-		// Maybe do this in a OnChange function for cv_fpscap?
-		I_InitFrameTime(now, cap);
-	}
-
-	if (frame_rate == 0)
-	{
-		// Always advance a frame.
-		elapsed_frames += 1.0;
-	}
-	else
-	{
-		elapsed_frames += (now - frame_epoch) / frame_frequency;
-	}
-
-	frame_epoch = now; // moving epoch
-	return elapsed_frames;
-}
-
-//
-// I_StartupTimer
+//I_StartupTimer
 //
 void I_StartupTimer(void)
 {
-	timer_frequency = SDL_GetPerformanceFrequency();
-	tic_epoch       = SDL_GetPerformanceCounter();
-
-	tic_frequency   = timer_frequency / (double)NEWTICRATE;
-	elapsed_tics    = 0.0;
-
-	I_InitFrameTime(tic_epoch, R_GetFramerateCap());
-	elapsed_frames  = 0.0;
+#ifdef _WIN32
+	// for win2k time bug
+	if (M_CheckParm("-gettickcount"))
+	{
+		starttickcount = GetTickCount();
+		CONS_Printf("%s", M_GetText("Using GetTickCount()\n"));
+	}
+	winmm = LoadLibraryA("winmm.dll");
+	if (winmm)
+	{
+		p_timeEndPeriod pfntimeBeginPeriod = (p_timeEndPeriod)(LPVOID)GetProcAddress(winmm, "timeBeginPeriod");
+		if (pfntimeBeginPeriod)
+			pfntimeBeginPeriod(1);
+		pfntimeGetTime = (p_timeGetTime)(LPVOID)GetProcAddress(winmm, "timeGetTime");
+	}
+	I_AddExitFunc(I_ShutdownTimer);
+#endif
 }
 
-//
-// I_Sleep
-// Sleeps by the value of cv_sleep
-//
+
+
 void I_Sleep(void)
 {
-	if (cv_sleep.value > 0)
+	if (cv_sleep.value != -1)
 		SDL_Delay(cv_sleep.value);
 }
-
-//
-// I_FrameCapSleep
-// Sleeps for a variable amount of time, depending on how much time the frame took.
-//
-boolean I_FrameCapSleep(const double t)
-{
-	// SDL_Delay(1) gives me a range of around 1.95ms to 2.05ms.
-	// Has a bit extra to be totally safe.
-	const double delayGranularity = 2.1;
-	double frameMS = 0.0;
-
-	double curTime = 0.0;
-	double destTime = 0.0;
-	double sleepTime = 0.0;
-
-	if (frame_rate == 0)
-	{
-		// We don't want to cap.
-		return false;
-	}
-
-	curTime = I_GetFrameTime();
-	destTime = floor(t) + 1.0;
-
-	if (curTime >= destTime)
-	{
-		// We're already behind schedule.
-		return false;
-	}
-
-	frameMS = frame_rate * 0.001; // 1ms as frame time
-	sleepTime = destTime - (delayGranularity * frameMS);
-
-	while (curTime < destTime)
-	{
-		if (curTime < sleepTime && cv_sleep.value <= 0)
-		{
-			// Wait 1ms at a time (on default settings)
-			// until we're close enough.
-			SDL_Delay(cv_sleep.value);
-		}
-
-		// This part will spin-lock the rest.
-		curTime = I_GetFrameTime();
-	}
-
-	// We took our nap.
-	return true;
-}
-
-#ifdef NEWSIGNALHANDLER
-static void newsignalhandler_Warn(const char *pr)
-{
-	char text[128];
-
-	snprintf(text, sizeof text,
-			"Error while setting up signal reporting: %s: %s",
-			pr,
-			strerror(errno)
-	);
-
-	I_OutputMsg("%s\n", text);
-
-	if (!M_CheckParm("-dedicated"))
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-			"Startup error",
-			text, NULL);
-
-	I_ShutdownConsole();
-	exit(-1);
-}
-
-static void I_Fork(void)
-{
-	int child;
-	int status;
-	int signum;
-	int c;
-
-	child = fork();
-
-	switch (child)
-	{
-		case -1:
-			newsignalhandler_Warn("fork()");
-			break;
-		case 0:
-			I_RegisterChildSignals();
-			break;
-		default:
-			if (logstream)
-				fclose(logstream);/* the child has this */
-
-			c = wait(&status);
-
-#ifdef LOGMESSAGES
-			/* By the way, exit closes files. */
-			logstream = fopen(logfilename, "at");
-#else
-			logstream = 0;
-#endif
-
-			if (c == -1)
-			{
-				kill(child, SIGKILL);
-				newsignalhandler_Warn("wait()");
-			}
-			else
-			{
-				if (WIFSIGNALED (status))
-				{
-					signum = WTERMSIG (status);
-#ifdef WCOREDUMP
-					I_ReportSignal(signum, WCOREDUMP (status));
-#else
-					I_ReportSignal(signum, 0);
-#endif
-					status = 128 + signum;
-				}
-				else if (WIFEXITED (status))
-				{
-					status = WEXITSTATUS (status);
-				}
-
-				I_ShutdownConsole();
-				exit(status);
-			}
-	}
-}
-#endif/*NEWSIGNALHANDLER*/
 
 INT32 I_StartupSystem(void)
 {
@@ -2402,15 +2111,7 @@ INT32 I_StartupSystem(void)
 	SDL_version SDLlinked;
 	SDL_VERSION(&SDLcompiled)
 	SDL_GetVersion(&SDLlinked);
-#ifdef HAVE_THREADS
-	I_start_threads();
-	I_AddExitFunc(I_stop_threads);
-#endif
 	I_StartupConsole();
-#ifdef NEWSIGNALHANDLER
-	I_Fork();
-#endif
-	I_RegisterSignals();
 	I_OutputMsg("Compiled for SDL version: %d.%d.%d\n",
 	 SDLcompiled.major, SDLcompiled.minor, SDLcompiled.patch);
 	I_OutputMsg("Linked with SDL version: %d.%d.%d\n",
@@ -2434,6 +2135,7 @@ void I_Quit(void)
 	if (quiting) goto death;
 	SDLforceUngrabMouse();
 	quiting = SDL_FALSE;
+	I_ShutdownConsole();
 	M_SaveConfig(NULL); //save game config, cvars..
 #ifndef NONET
 	D_SaveBan(); // save the ban list
@@ -2445,17 +2147,12 @@ void I_Quit(void)
 	if (demorecording)
 		G_CheckDemoStatus();
 	if (metalrecording)
-		G_StopMetalRecording(false);
+		G_StopMetalRecording();
 
 	D_QuitNetGame();
-	CL_AbortDownloadResume();
-	M_FreePlayerSetupColors();
-
-#ifdef HAVE_DISCORDRPC
-	DRPC_ShutDown();
-#endif
 	I_ShutdownMusic();
 	I_ShutdownSound();
+	I_ShutdownCD();
 	// use this for 1.28 19990220 by Kin
 	I_ShutdownGraphics();
 	I_ShutdownInput();
@@ -2516,14 +2213,16 @@ void I_Error(const char *error, ...)
 		if (errorcount == 3)
 			I_ShutdownSound();
 		if (errorcount == 4)
-			I_ShutdownGraphics();
+			I_ShutdownCD();
 		if (errorcount == 5)
-			I_ShutdownInput();
+			I_ShutdownGraphics();
 		if (errorcount == 6)
-			I_ShutdownSystem();
+			I_ShutdownInput();
 		if (errorcount == 7)
-			SDL_Quit();
+			I_ShutdownSystem();
 		if (errorcount == 8)
+			SDL_Quit();
+		if (errorcount == 9)
 		{
 			M_SaveConfig(NULL);
 			G_SaveGameData();
@@ -2536,10 +2235,9 @@ void I_Error(const char *error, ...)
 			// Implement message box with SDL_ShowSimpleMessageBox,
 			// which should fail gracefully if it can't put a message box up
 			// on the target system
-			if (!M_CheckParm("-dedicated"))
-				SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-					"SRB2 "VERSIONSTRING" Recursive Error",
-					buffer, NULL);
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+				"SRB2 "VERSIONSTRING" Recursive Error",
+				buffer, NULL);
 
 			W_Shutdown();
 			exit(-1); // recursive errors detected
@@ -2555,6 +2253,8 @@ void I_Error(const char *error, ...)
 	I_OutputMsg("\nI_Error(): %s\n", buffer);
 	// ---
 
+	I_ShutdownConsole();
+
 	M_SaveConfig(NULL); // save game config, cvars..
 #ifndef NONET
 	D_SaveBan(); // save the ban list
@@ -2565,17 +2265,13 @@ void I_Error(const char *error, ...)
 	if (demorecording)
 		G_CheckDemoStatus();
 	if (metalrecording)
-		G_StopMetalRecording(false);
+		G_StopMetalRecording();
 
 	D_QuitNetGame();
-	CL_AbortDownloadResume();
-	M_FreePlayerSetupColors();
 	I_ShutdownMusic();
 	I_ShutdownSound();
+	I_ShutdownCD();
 	// use this for 1.28 19990220 by Kin
-#ifdef HAVE_DISCORDRPC
-	DRPC_ShutDown();
-#endif
 	I_ShutdownGraphics();
 	I_ShutdownInput();
 	I_ShutdownSystem();
@@ -2584,10 +2280,9 @@ void I_Error(const char *error, ...)
 	// Implement message box with SDL_ShowSimpleMessageBox,
 	// which should fail gracefully if it can't put a message box up
 	// on the target system
-	if (!M_CheckParm("-dedicated"))
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-			"SRB2 "VERSIONSTRING" Error",
-			buffer, NULL);
+	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+		"SRB2 "VERSIONSTRING" Error",
+		buffer, NULL);
 	// Note that SDL_ShowSimpleMessageBox does *not* require SDL to be
 	// initialized at the time, so calling it after SDL_Quit() is
 	// perfectly okay! In addition, we do this on purpose so the
@@ -2648,48 +2343,6 @@ void I_RemoveExitFunc(void (*func)())
 	}
 }
 
-#if !(defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON))
-static void Shittycopyerror(const char *name)
-{
-	I_OutputMsg(
-			"Error copying log file: %s: %s\n",
-			name,
-			strerror(errno)
-	);
-}
-
-static void Shittylogcopy(void)
-{
-	char buf[8192];
-	FILE *fp;
-	size_t r;
-	if (fseek(logstream, 0, SEEK_SET) == -1)
-	{
-		Shittycopyerror("fseek");
-	}
-	else if (( fp = fopen(logfilename, "wt") ))
-	{
-		while (( r = fread(buf, 1, sizeof buf, logstream) ))
-		{
-			if (fwrite(buf, 1, r, fp) < r)
-			{
-				Shittycopyerror("fwrite");
-				break;
-			}
-		}
-		if (ferror(logstream))
-		{
-			Shittycopyerror("fread");
-		}
-		fclose(fp);
-	}
-	else
-	{
-		Shittycopyerror(logfilename);
-	}
-}
-#endif/*!(defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON))*/
-
 //
 //  Closes down everything. This includes restoring the initial
 //  palette and video mode, and removing whatever mouse, keyboard, and
@@ -2701,10 +2354,6 @@ void I_ShutdownSystem(void)
 {
 	INT32 c;
 
-#ifndef NEWSIGNALHANDLER
-	I_ShutdownConsole();
-#endif
-
 	for (c = MAX_QUIT_FUNCS-1; c >= 0; c--)
 		if (quit_funcs[c])
 			(*quit_funcs[c])();
@@ -2712,9 +2361,6 @@ void I_ShutdownSystem(void)
 	if (logstream)
 	{
 		I_OutputMsg("I_ShutdownSystem(): end of logstream.\n");
-#if !(defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON))
-		Shittylogcopy();
-#endif
 		fclose(logstream);
 		logstream = NULL;
 	}
@@ -2730,7 +2376,7 @@ void I_GetDiskFreeSpace(INT64 *freespace)
 	return;
 #else // Both Linux and BSD have this, apparently.
 	struct statfs stfs;
-	if (statfs(srb2home, &stfs) == -1)
+	if (statfs(".", &stfs) == -1)
 	{
 		*freespace = INT32_MAX;
 		return;
@@ -2749,7 +2395,7 @@ void I_GetDiskFreeSpace(INT64 *freespace)
 	}
 	if (pfnGetDiskFreeSpaceEx)
 	{
-		if (pfnGetDiskFreeSpaceEx(srb2home, &lfreespace, &usedbytes, NULL))
+		if (pfnGetDiskFreeSpaceEx(NULL, &lfreespace, &usedbytes, NULL))
 			*freespace = lfreespace.QuadPart;
 		else
 			*freespace = INT32_MAX;
@@ -2805,7 +2451,7 @@ char *I_GetUserName(void)
 INT32 I_mkdir(const char *dirname, INT32 unixright)
 {
 //[segabor]
-#if defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON) || defined (__CYGWIN__)
+#if defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON) || defined (__CYGWIN__) || defined (__OS2__)
 	return mkdir(dirname, unixright);
 #elif defined (_WIN32)
 	UNREFERENCED_PARAMETER(unixright); /// \todo should implement ntright under nt...
@@ -2855,10 +2501,10 @@ const char *I_ClipboardPaste(void)
 
 	if (!SDL_HasClipboardText())
 		return NULL;
-
 	clipboard_contents = SDL_GetClipboardText();
-	strlcpy(clipboard_modified, clipboard_contents, 256);
+	memcpy(clipboard_modified, clipboard_contents, 255);
 	SDL_free(clipboard_contents);
+	clipboard_modified[255] = 0;
 
 	while (*i)
 	{
@@ -2899,6 +2545,14 @@ static boolean isWadPathOk(const char *path)
 		return true;
 	}
 
+	sprintf(wad3path, pandf, path, WADKEYWORD2);
+
+	if (FIL_ReadFileOK(wad3path))
+	{
+		free(wad3path);
+		return true;
+	}
+
 	free(wad3path);
 	return false;
 }
@@ -2916,7 +2570,7 @@ static void pathonly(char *s)
 		}
 }
 
-/**	\brief	search for srb2.pk3 in the given path
+/**	\brief	search for srb2.srb in the given path
 
 	\param	searchDir	starting path
 
@@ -2937,12 +2591,19 @@ static const char *searchWad(const char *searchDir)
 		return tempsw;
 	}
 
+	strcpy(tempsw, WADKEYWORD2);
+	fstemp = filesearch(tempsw, searchDir, NULL, true, 20);
+	if (fstemp == FS_FOUND)
+	{
+		pathonly(tempsw);
+		return tempsw;
+	}
 	return NULL;
 }
 
-/**	\brief go through all possible paths and look for srb2.pk3
+/**	\brief go through all possible paths and look for srb2.srb
 
-  \return path to srb2.pk3 if any
+  \return path to srb2.srb if any
 */
 static const char *locateWad(void)
 {
@@ -3071,7 +2732,7 @@ const char *I_LocateWad(void)
 
 	if (waddir)
 	{
-		// change to the directory where we found srb2.pk3
+		// change to the directory where we found srb2.srb
 #if defined (_WIN32)
 		SetCurrentDirectoryA(waddir);
 #else
@@ -3162,6 +2823,16 @@ UINT32 I_GetFreeMem(UINT32 *total)
 	if (total)
 		*total = (UINT32)info.dwTotalPhys;
 	return (UINT32)info.dwAvailPhys;
+#elif defined (__OS2__)
+	UINT32 pr_arena;
+
+	if (total)
+		DosQuerySysInfo( QSV_TOTPHYSMEM, QSV_TOTPHYSMEM,
+							(PVOID) total, sizeof (UINT32));
+	DosQuerySysInfo( QSV_MAXPRMEM, QSV_MAXPRMEM,
+				(PVOID) &pr_arena, sizeof (UINT32));
+
+	return pr_arena;
 #elif defined (__linux__)
 	/* Linux */
 	char buf[1024];

@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
+// Copyright (C) 1999-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -17,20 +17,18 @@
 #ifndef __DOOMTYPE__
 #define __DOOMTYPE__
 
-#ifdef _WIN32
+#if (defined (_WIN32) && !defined (_XBOX)) || (defined (_WIN32_WCE) && !defined (__GNUC__))
 //#define WIN32_LEAN_AND_MEAN
 #define RPC_NO_WINDOWS_H
 #include <windows.h>
 #endif
 
-/* 7.18.1.1  Exact-width integer types */
-#ifdef _MSC_VER
-// libopenmpt.h will include stdint.h later;
-// include it now so that INT8_MAX etc. don't get redefined
-#ifdef HAVE_OPENMPT
-#include <stdint.h>
+#ifdef _NDS
+#include <nds.h>
 #endif
 
+/* 7.18.1.1  Exact-width integer types */
+#ifdef _MSC_VER
 #define UINT8 unsigned __int8
 #define SINT8 signed __int8
 
@@ -54,6 +52,30 @@ typedef long ssize_t;
 		#define PDWORD_PTR PDWORD
 	#endif
 #endif
+#elif defined (_arch_dreamcast) // KOS Dreamcast
+#include <arch/types.h>
+
+#define UINT8 unsigned char
+#define SINT8 signed char
+
+#define UINT16 uint16
+#define INT16 int16
+
+#define INT32 int
+#define UINT32 unsigned int
+#define INT64  int64
+#define UINT64 uint64
+#elif defined (__DJGPP__)
+#define UINT8 unsigned char
+#define SINT8 signed char
+
+#define UINT16 unsigned short int
+#define INT16 signed short int
+
+#define INT32 signed long
+#define UINT32 unsigned long
+#define INT64  signed long long
+#define UINT64 unsigned long long
 #else
 #define __STDC_LIMIT_MACROS
 #include <stdint.h>
@@ -78,12 +100,14 @@ typedef long ssize_t;
 
 /* Strings and some misc platform specific stuff */
 
-#ifdef _MSC_VER
+#if defined (_MSC_VER) || defined (__OS2__)
 	// Microsoft VisualC++
+#ifdef _MSC_VER
 #if (_MSC_VER <= 1800) // MSVC 2013 and back
 	#define snprintf                _snprintf
 #if (_MSC_VER <= 1200) // MSVC 6.0 and back
 	#define vsnprintf               _vsnprintf
+#endif
 #endif
 #endif
 	#define strncasecmp             strnicmp
@@ -97,15 +121,23 @@ typedef long ssize_t;
 	#define strncasecmp             strnicmp
 	#define strcasecmp              strcmpi
 #endif
-#if defined (__unix__) || defined (__APPLE__) || defined (UNIXCOMMON)
+#ifdef _PSP
+	#include <malloc.h>
+#elif (defined (__unix__) && !defined (MSDOS)) || defined(__APPLE__) || defined (UNIXCOMMON)
 	#undef stricmp
 	#define stricmp(x,y) strcasecmp(x,y)
 	#undef strnicmp
 	#define strnicmp(x,y,n) strncasecmp(x,y,n)
 #endif
-
-char *strcasestr(const char *in, const char *what);
-#define stristr strcasestr
+#ifdef _WIN32_WCE
+#ifndef __GNUC__
+	#define stricmp(x,y)            _stricmp(x,y)
+	#define strnicmp                _strnicmp
+#endif
+	#define strdup                  _strdup
+	#define strupr                  _strupr
+	#define strlwr                  _strlwr
+#endif
 
 #if defined (macintosh) //|| defined (__APPLE__) //skip all boolean/Boolean crap
 	#define true 1
@@ -125,7 +157,7 @@ char *strcasestr(const char *in, const char *what);
 	#endif
 #endif //macintosh
 
-#if defined (_WIN32) || defined (__HAIKU__)
+#if defined (PC_DOS) || defined (_WIN32) || defined (_WII) || defined (_PSP) || defined (_arch_dreamcast) || defined (__HAIKU__) || defined(_NDS)  || defined(_PS3)
 #define HAVE_DOSSTR_FUNCS
 #endif
 
@@ -159,17 +191,21 @@ size_t strlcpy(char *dst, const char *src, size_t siz);
 	//faB: clean that up !!
 	#if defined( _MSC_VER)  && (_MSC_VER >= 1800) // MSVC 2013 and forward
 		#include "stdbool.h"
-	#elif defined (_WIN32)
+	#elif (defined (_WIN32) || (defined (_WIN32_WCE) && !defined (__GNUC__))) && !defined (_XBOX)
 		#define false   FALSE           // use windows types
 		#define true    TRUE
 		#define boolean BOOL
+	#elif defined(_NDS)
+		#define boolean bool
+	#elif defined(_PS3) // defined(__GNUC__)?
+		#include <stdbool.h>  //_bool_true_false_are_defined?
+		#define boolean bool
 	#else
 		typedef enum {false, true} boolean;
 	#endif
 #endif // __BYTEBOOL__
 
 /* 7.18.2.1  Limits of exact-width integer types */
-
 #ifndef INT8_MIN
 #define INT8_MIN (-128)
 #endif
@@ -262,6 +298,12 @@ size_t strlcpy(char *dst, const char *src, size_t siz);
 	#endif
 
 	#define ATTRUNUSED __attribute__((unused))
+
+	// Xbox-only macros
+	#ifdef _XBOX
+		#define FILESTAMP I_OutputMsg("%s:%d\n",__FILE__,__LINE__);
+		#define XBOXSTATIC static
+	#endif
 #elif defined (_MSC_VER)
 	#define ATTRNORETURN __declspec(noreturn)
 	#define ATTRINLINE __forceinline
@@ -315,21 +357,25 @@ size_t strlcpy(char *dst, const char *src, size_t siz);
 #ifndef ATTRNOINLINE
 #define ATTRNOINLINE
 #endif
+#ifndef XBOXSTATIC
+#define XBOXSTATIC
+#endif
+#ifndef FILESTAMP
+#define FILESTAMP
+#endif
 
 /* Miscellaneous types that don't fit anywhere else (Can this be changed?) */
-
-typedef struct
-{
-	UINT8 red;
-	UINT8 green;
-	UINT8 blue;
-	UINT8 alpha;
-} byteColor_t;
 
 union FColorRGBA
 {
 	UINT32 rgba;
-	byteColor_t s;
+	struct
+	{
+		UINT8 red;
+		UINT8 green;
+		UINT8 blue;
+		UINT8 alpha;
+	} s;
 } ATTRPACK;
 typedef union FColorRGBA RGBA_t;
 
@@ -355,43 +401,5 @@ typedef UINT32 tic_t;
 #else
 #define UINT2RGBA(a) (UINT32)((a&0xff)<<24)|((a&0xff00)<<8)|((a&0xff0000)>>8)|(((UINT32)a&0xff000000)>>24)
 #endif
-
-#define TOSTR(x) #x
-
-/* preprocessor dumb and needs second macro to expand input */
-#define WSTRING2(s) L ## s
-#define WSTRING(s) WSTRING2 (s)
-
-/*
-A hack by Monster Iestyn: Return a pointer to a field of
-a struct from a pointer to another field in the struct.
-Needed for some lua shenanigans.
-*/
-#define FIELDFROM( type, field, have, want ) \
-	(void *)((intptr_t)(field) - offsetof (type, have) + offsetof (type, want))
-
-typedef UINT8 bitarray_t;
-
-#define BIT_ARRAY_SIZE(n) (((n) + 7) >> 3)
-
-static inline int
-in_bit_array (const bitarray_t * const array, const int value)
-{
-	return (array[value >> 3] & (1<<(value & 7)));
-}
-
-static inline void
-set_bit_array (bitarray_t * const array, const int value)
-{
-	array[value >> 3] |= (1<<(value & 7));
-}
-
-static inline void
-unset_bit_array (bitarray_t * const array, const int value)
-{
-	array[value >> 3] &= ~(1<<(value & 7));
-}
-
-typedef UINT64 precise_t;
 
 #endif //__DOOMTYPE__

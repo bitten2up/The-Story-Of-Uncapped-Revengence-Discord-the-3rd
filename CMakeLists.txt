@@ -1,32 +1,12 @@
-cmake_minimum_required(VERSION 3.13)
-
-# Enable CCache early
-set(SRB2_USE_CCACHE OFF CACHE BOOL "Use CCache")
-if (${SRB2_USE_CCACHE})
-	find_program(CCACHE_PROGRAM ccache)
-	if(CCACHE_PROGRAM)
-		message(STATUS "Found CCache: ${CCACHE_PROGRAM}")
-		set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
-	else()
-		message(WARNING "You have specified to use CCACHE but it was not found. Object files will not be cached.")
-	endif()
-endif()
-
-file(STRINGS src/version.h SRB2_VERSION)
-string(REGEX MATCH "[0-9]+\\.[0-9.]+" SRB2_VERSION ${SRB2_VERSION})
-
+cmake_minimum_required(VERSION 3.0)
 # DO NOT CHANGE THIS SRB2 STRING! Some variable names depend on this string.
 # Version change is fine.
 project(SRB2
-	VERSION ${SRB2_VERSION}
+	VERSION 2.1.25
 	LANGUAGES C)
 
 if(${PROJECT_SOURCE_DIR} MATCHES ${PROJECT_BINARY_DIR})
 	message(FATAL_ERROR "In-source builds will bring you a world of pain. Please make a separate directory to invoke CMake from.")
-endif()
-
-if ((${SRB2_USE_CCACHE}) AND (${CMAKE_C_COMPILER} MATCHES "clang"))
-	message(WARNING "Using clang and CCache: You may want to set environment variable CCACHE_CPP2=yes to prevent include errors during compile.")
 endif()
 
 # Set up CMAKE path
@@ -34,11 +14,12 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/Modules/")
 
 ### Useful functions
 
-# Add sources from Sourcefile
-function(target_sourcefile type)
-	file(STRINGS Sourcefile list
-		REGEX "[-0-9A-Za-z_]+\.${type}")
-	target_sources(SRB2SDL2 PRIVATE ${list})
+# Prepend sources with current source directory
+function(prepend_sources SOURCE_FILES)
+	foreach(SOURCE_FILE ${${SOURCE_FILES}})
+		set(MODIFIED ${MODIFIED} ${CMAKE_CURRENT_SOURCE_DIR}/${SOURCE_FILE})
+	endforeach()
+	set(${SOURCE_FILES} ${MODIFIED} PARENT_SCOPE)
 endfunction()
 
 # Macro to add OSX framework
@@ -114,6 +95,7 @@ set(CMAKE_PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # Set EXE names so the assets CMakeLists can refer to its target
 set(SRB2_SDL2_EXE_NAME srb2 CACHE STRING "Executable binary output name")
+set(SRB2_WIN_EXE_NAME srb2dd CACHE STRING "Executable binary output name for DirectDraw build")
 
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/src)
 
@@ -132,19 +114,16 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/config.h.in ${CMAKE_CURRENT_BINAR
 
 ##### PACKAGE CONFIGURATION #####
 
-set(SRB2_CPACK_GENERATOR "" CACHE STRING "Generator to use for making a package. E.g., ZIP, TGZ, DragNDrop (OSX only). Leave blank for default generator.")
-
-if("${SRB2_CPACK_GENERATOR}" STREQUAL "")
-	if(${CMAKE_SYSTEM} MATCHES "Windows")
-		set(SRB2_CPACK_GENERATOR "ZIP")
-	elseif(${CMAKE_SYSTEM} MATCHES "Linux")
-		set(SRB2_CPACK_GENERATOR "TGZ")
-	elseif(${CMAKE_SYSTEM} MATCHES "Darwin")
-		set(SRB2_CPACK_GENERATOR "TGZ")
-	endif()
+if(${CMAKE_SYSTEM} MATCHES "Windows")
+	set(CPACK_GENERATOR "ZIP")
+endif()
+if(${CMAKE_SYSTEM} MATCHES "Linux")
+	set(CPACK_GENERATOR "TGZ")
+endif()
+if(${CMAKE_SYSTEM} MATCHES "Darwin")
+	set(CPACK_GENERATOR "DragNDrop")
 endif()
 
-set(CPACK_GENERATOR ${SRB2_CPACK_GENERATOR})
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Sonic Robo Blast 2" CACHE STRING "Program name for display purposes")
 set(CPACK_PACKAGE_VENDOR "Sonic Team Jr." CACHE STRING "Vendor name for display purposes")
 #set(CPACK_PACKAGE_DESCRIPTION_FILE )
@@ -153,5 +132,4 @@ set(CPACK_PACKAGE_VERSION_MAJOR ${SRB2_VERSION_MAJOR})
 set(CPACK_PACKAGE_VERSION_MINOR ${SRB2_VERSION_MINOR})
 set(CPACK_PACKAGE_VERSION_PATCH ${SRB2_VERSION_PATCH})
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "CMake ${CMAKE_VERSION_MAJOR}.${CMAKE_VERSION_MINOR}")
-SET(CPACK_OUTPUT_FILE_PREFIX package)
 include(CPack)

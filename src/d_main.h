@@ -2,7 +2,7 @@
 //-----------------------------------------------------------------------------
 // Copyright (C) 1993-1996 by id Software, Inc.
 // Copyright (C) 1998-2000 by DooM Legacy Team.
-// Copyright (C) 1999-2022 by Sonic Team Junior.
+// Copyright (C) 1999-2018 by Sonic Team Junior.
 //
 // This program is free software distributed under the
 // terms of the GNU General Public License, version 2.
@@ -23,7 +23,6 @@ extern boolean advancedemo;
 extern tic_t rendergametic;
 
 extern char srb2home[256]; //Alam: My Home
-extern boolean autoloading; //Star: Are you Autoloading, Son?
 extern boolean usehome; //Alam: which path?
 extern const char *pandf; //Alam: how to path?
 extern char srb2path[256]; //Alam: SRB2's Home
@@ -41,6 +40,10 @@ void D_SRB2Main(void);
 
 // Called by IO functions when input is detected.
 void D_PostEvent(const event_t *ev);
+#if defined (PC_DOS) && !defined (DOXYGEN)
+void D_PostEvent_end(void);    // delimiter for locking memory
+#endif
+
 void D_ProcessEvents(void);
 
 const char *D_Home(void);
