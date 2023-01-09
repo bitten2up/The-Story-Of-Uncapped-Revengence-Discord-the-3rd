@@ -76,6 +76,8 @@ int	snprintf(char *str, size_t n, const char *fmt, ...);
 #include "keys.h"
 #include "filesrch.h" // refreshdirmenu, mainwadstally
 
+#include "r_fps.h" // uncapped stuffs lol
+
 #ifdef CMAKECONFIG
 #include "config.h"
 #else
@@ -351,6 +353,8 @@ static void D_Display(void)
 		// draw the view directly
 		if (cv_renderview.value && !automapactive)
 		{
+			R_ApplyLevelInterpolators(R_UsingFrameInterpolation() ? rendertimefrac : FRACUNIT);
+			
 			if (players[displayplayer].mo || players[displayplayer].playerstate == PST_DEAD)
 			{
 				topleft = screens[0] + viewwindowy*vid.width + viewwindowx;
@@ -389,6 +393,9 @@ static void D_Display(void)
 			// Image postprocessing effect
 			if (rendermode == render_soft)
 			{
+				if (!splitscreen)
+					R_ApplyViewMorph();
+					
 				if (postimgtype)
 					V_DoPostProcessor(0, postimgtype, postimgparam);
 				if (postimgtype2)
@@ -501,6 +508,9 @@ void D_SRB2Loop(void)
 {
 	tic_t oldentertics = 0, entertic = 0, realtics = 0, rendertimeout = INFTICS;
 
+	boolean ticked = interp = doDisplay = screenUpdate = false;
+	double frameEnd = 0.0;
+
 	if (dedicated)
 		server = true;
 
@@ -554,6 +564,12 @@ void D_SRB2Loop(void)
 		entertic = I_GetTime();
 		realtics = entertic - oldentertics;
 		oldentertics = entertic;
+		
+		if (demoplayback && gamestate == GS_LEVEL)
+		{
+			// Nicer place to put this.
+			realtics = realtics * cv_playbackspeed.value;
+		}
 
 		refreshdirmenu = 0; // not sure where to put this, here as good as any?
 
@@ -562,6 +578,10 @@ void D_SRB2Loop(void)
 			if (debugload)
 				debugload--;
 #endif
+
+		interp = R_UsingFrameInterpolation() && !dedicated;
+		doDisplay = screenUpdate = false;
+		ticked = false;
 
 		if (!realtics && !singletics)
 		{
@@ -614,6 +634,7 @@ void D_SRB2Loop(void)
 
 		// consoleplayer -> displayplayer (hear sounds from viewpoint)
 		S_UpdateSounds(); // move positional sounds
+		S_UpdateClosedCaptions();
 
 		// check for media change, loop music..
 		I_UpdateCD();
@@ -625,6 +646,19 @@ void D_SRB2Loop(void)
 #ifdef HAVE_BLUA
 		LUA_Step();
 #endif
+
+		// Fully completed frame made.
+		frameEnd = I_GetFrameTime();
+		if (!singletics && !dedicated)
+		{
+			I_FrameCapSleep(frameEnd);
+		}
+		else if (dedicated)
+		{
+			// Preserve the pre-interp sleeping behavior for dedicated mode
+			I_Sleep();
+		}
+
 	}
 }
 

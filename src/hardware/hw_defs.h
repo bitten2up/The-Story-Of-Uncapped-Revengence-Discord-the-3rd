@@ -109,6 +109,14 @@ typedef struct
 	FLOAT       fovxangle, fovyangle;
 	INT32       splitscreen;
 	boolean     flip;            // screenflip
+	boolean 	roll;
+	SINT8		rollflip;
+	FLOAT		rollangle; // override prevention squad
+	UINT8		rotaxis;
+	FLOAT		centerx, centery;
+
+	boolean     shearing;        // 14042019
+	float       viewaiming;      // 17052019
 } FTransform;
 
 // Transformed vector, as passed to HWR API

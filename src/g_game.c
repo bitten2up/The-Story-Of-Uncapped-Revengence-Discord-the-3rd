@@ -47,6 +47,8 @@
 #include "m_cond.h" // condition sets
 #include "md5.h" // demo checksums
 
+#include "r_fps.h" // uncapped thingies lol
+
 gameaction_t gameaction;
 gamestate_t gamestate = GS_NULL;
 UINT8 ultimatemode = false;
@@ -2020,6 +2022,8 @@ void G_Ticker(boolean run)
 			ST_Ticker();
 			AM_Ticker();
 			HU_Ticker();
+			//if (run)
+				//R_UpdateViewInterpolation();
 			break;
 
 		case GS_INTERMISSION:
@@ -2064,6 +2068,12 @@ void G_Ticker(boolean run)
 			break;
 
 		case GS_TITLESCREEN:
+			//P_Ticker(run);
+			//if (run)
+				//R_UpdateViewInterpolation(); // then intentionally fall through
+			/* FALLTHRU */
+			break;
+			
 		case GS_WAITINGPLAYERS:
 			F_TitleScreenTicker(run);
 			break;

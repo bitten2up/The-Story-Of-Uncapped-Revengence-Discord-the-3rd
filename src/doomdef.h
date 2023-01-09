@@ -144,8 +144,8 @@ extern FILE *logstream;
 #ifdef DEVELOP
 #define VERSION    0 // Game version
 #define SUBVERSION 0 // more precise version number
-#define VERSIONSTRING "Development EXE"
-#define VERSIONSTRINGW L"Development EXE"
+#define VERSIONSTRING "SRB2 v2.1.25 TSOURDT3RD (By StarManiaKG#4884) DEV. EDITION"
+#define VERSIONSTRINGW L"SRB2 v2.1.25 TSOURDT3RD (By StarManiaKG#4884) DEV. EDITION"
 // most interface strings are ignored in development mode.
 // we use comprevision and compbranch instead.
 #else
@@ -408,6 +408,7 @@ extern INT32 cv_debug;
 #define DBG_MEMORY      0x0200
 #define DBG_SETUP       0x0400
 #define DBG_LUA         0x0800
+#define DBG_VIEWMORPH   0x1000
 
 // =======================
 // Misc stuff for later...
@@ -475,10 +476,10 @@ extern const char *compdate, *comptime, *comprevision, *compbranch;
 //#define DELFILE
 
 ///	Allows the use of devmode in multiplayer. AKA "fishcake"
-//#define NETGAME_DEVMODE
+#define NETGAME_DEVMODE
 
 ///	Allows gravity changes in netgames, no questions asked.
-//#define NETGAME_GRAVITY
+#define NETGAME_GRAVITY
 
 ///	Dumps the contents of a network save game upon consistency failure for debugging.
 //#define DUMPCONSISTENCY

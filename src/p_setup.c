@@ -3095,7 +3095,7 @@ boolean P_SetupLevel(boolean skipprecip)
 
 #ifdef HWRENDER
 		if (rendermode != render_soft && rendermode != render_none)
-			CV_Set(&cv_grfov, cv_grfov.defaultvalue);
+			CV_Set(&cv_fov, cv_fov.defaultvalue);
 #endif
 
 		displayplayer = consoleplayer; // Start with your OWN view, please!

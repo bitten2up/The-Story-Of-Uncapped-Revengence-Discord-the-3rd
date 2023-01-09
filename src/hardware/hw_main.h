@@ -81,7 +81,6 @@ extern consvar_t cv_grstaticlighting;
 extern consvar_t cv_grcoronas;
 extern consvar_t cv_grcoronasize;
 #endif
-extern consvar_t cv_grfov;
 extern consvar_t cv_grmd2;
 extern consvar_t cv_grfog;
 extern consvar_t cv_grfogcolor;
@@ -94,8 +93,9 @@ extern consvar_t cv_grfiltermode;
 extern consvar_t cv_granisotropicmode;
 extern consvar_t cv_grcorrecttricks;
 extern consvar_t cv_voodoocompatibility;
-extern consvar_t cv_grfovchange;
+extern consvar_t cv_fovchange;
 extern consvar_t cv_grsolvetjoin;
+extern consvar_t cv_glshearing;
 extern consvar_t cv_grspritebillboarding;
 
 extern float gr_viewwidth, gr_viewheight, gr_baseviewwindowy;

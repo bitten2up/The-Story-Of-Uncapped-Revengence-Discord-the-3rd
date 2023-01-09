@@ -1673,6 +1673,20 @@
 			path = ../../r_segs.c;
 			refType = 2;
 		};
+		8417778G085A111B000C01D8 = {
+			fileEncoding = 30;
+			isa = PBXFileReference;
+			name = r_fps.c;
+			path = ../../r_fps.c;
+			refType = 2;
+		};
+		8417778H085A111B000C01D8 = {
+			fileEncoding = 30;
+			isa = PBXFileReference;
+			name = r_fps.h;
+			path = ../../r_fps.h;
+			refType = 2;
+		};
 		84177790085A111B000C01D8 = {
 			fileEncoding = 30;
 			isa = PBXFileReference;

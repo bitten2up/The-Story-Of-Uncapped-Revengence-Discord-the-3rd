@@ -1765,6 +1765,10 @@ HW3SOUND for 3D hardware sound  support
 		<Unit filename="src/screen.c">
 			<Option compilerVar="CC" />
 		</Unit>
+		<Unit filename="src/r_fps.c">
+		<Unit filename="src/r_fps.h" />
+			<Option compilerVar="CC" />
+		</Unit>
 		<Unit filename="src/screen.h" />
 		<Unit filename="src/sdl/IMG_xpm.c">
 			<Option compilerVar="CC" />

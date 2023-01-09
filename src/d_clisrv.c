@@ -1992,6 +1992,8 @@ static boolean CL_ServerConnectionTicker(boolean viams, const char *tmpsave, tic
 			I_UpdateNoVsync(); // page flip or blit buffer
 			if (moviemode)
 				M_SaveFrame();
+			S_UpdateSounds();
+			S_UpdateClosedCaptions();
 		}
 #else
 		CON_Drawer();

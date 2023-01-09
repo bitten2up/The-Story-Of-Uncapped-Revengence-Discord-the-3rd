@@ -3060,6 +3060,9 @@ void A_Invincibility(mobj_t *actor)
 		if (mariomode)
 			G_GhostAddColor(GHC_INVINCIBLE);
 		S_ChangeMusicInternal((mariomode) ? "minvnc" : "invinc", false);
+		
+		strlcpy(S_sfx[sfx_None].caption, "Invincibility", 14);
+		S_StartCaption(sfx_None, -1, player->powers[pw_invulnerability]);
 	}
 }
 
@@ -3096,6 +3099,9 @@ void A_SuperSneakers(mobj_t *actor)
 		{
 			S_StopMusic();
 			S_ChangeMusicInternal("shoes", false);
+			
+			strlcpy(S_sfx[sfx_None].caption, "Speed shoes", 12);
+			S_StartCaption(sfx_None, -1, player->powers[pw_sneakers]);
 		}
 	}
 }

@@ -29,6 +29,15 @@ extern fixed_t projection, projectiony;
 
 extern size_t validcount, linecount, loopcount, framecount;
 
+// The fraction of a tic being drawn (for interpolation between two tics)
+extern fixed_t rendertimefrac;
+// Evaluated delta tics for this frame (how many tics since the last frame)
+extern fixed_t renderdeltatics;;
+
+// WARNING: a should be unsigned but to add with 2048, it isn't!
+extern fixed_t fovtan; // field of view
+#define AIMINGTODY(a) FixedDiv((FINETANGENT((2048+(((INT32)a)>>ANGLETOFINESHIFT)) & FINEMASK)*160), fovtan)
+
 //
 // Lighting LUT.
 // Used for z-depth cuing per column/row,
@@ -79,6 +88,7 @@ extern consvar_t cv_flipcam, cv_flipcam2;
 extern consvar_t cv_shadow, cv_shadowoffs;
 extern consvar_t cv_translucency;
 extern consvar_t cv_precipdensity, cv_drawdist, cv_drawdist_nights, cv_drawdist_precip;
+extern consvar_t cv_fov;
 extern consvar_t cv_skybox;
 extern consvar_t cv_tailspickup;
 
@@ -95,9 +105,17 @@ void R_ExecuteSetViewSize(void);
 void R_SkyboxFrame(player_t *player);
 
 void R_SetupFrame(player_t *player, boolean skybox);
+
 // Called by G_Drawer.
 void R_RenderPlayerView(player_t *player);
+boolean R_ViewpointHasChasecam(player_t *player);
+boolean R_IsViewpointThirdPerson(player_t *player, boolean skybox);
 
 // add commands related to engine, at game startup
 void R_RegisterEngineStuff(void);
+
+// viewmorphs
+void R_CheckViewMorph(void);
+void R_ApplyViewMorph(void);
+
 #endif

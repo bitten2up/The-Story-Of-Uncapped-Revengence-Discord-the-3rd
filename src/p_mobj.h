@@ -265,6 +265,8 @@ typedef struct mobj_s
 
 	// Info for drawing: position.
 	fixed_t x, y, z;
+	fixed_t old_x, old_y, old_z; // position interpolation
+	fixed_t old_x2, old_y2, old_z2;
 
 	// More list: links in sector (if needed)
 	struct mobj_s *snext;
@@ -272,6 +274,8 @@ typedef struct mobj_s
 
 	// More drawing info: to determine current sprite.
 	angle_t angle;  // orientation
+	angle_t old_angle; // orientation interpolation
+	angle_t old_angle2;
 	spritenum_t sprite; // used to find patch_t and flip value
 	UINT32 frame; // frame number, plus bits see p_pspr.h
 	UINT16 anim_duration; // for FF_ANIMATE states
@@ -380,6 +384,9 @@ typedef struct precipmobj_s
 
 	// Info for drawing: position.
 	fixed_t x, y, z;
+	fixed_t old_x, old_y, old_z; // position interpolation
+	fixed_t old_x2, old_y2, old_z2;
+
 
 	// More list: links in sector (if needed)
 	struct precipmobj_s *snext;
@@ -387,6 +394,8 @@ typedef struct precipmobj_s
 
 	// More drawing info: to determine current sprite.
 	angle_t angle;  // orientation
+	angle_t old_angle; // orientation interpolation
+	angle_t old_angle2;
 	spritenum_t sprite; // used to find patch_t and flip value
 	UINT32 frame; // frame number, plus bits see p_pspr.h
 	UINT16 anim_duration; // for FF_ANIMATE states

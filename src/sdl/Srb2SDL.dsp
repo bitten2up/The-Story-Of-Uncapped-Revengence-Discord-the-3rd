@@ -922,6 +922,14 @@ SOURCE=..\r_main.h
 # End Source File
 # Begin Source File
 
+SOURCE=..\r_fps.c
+# End Source File
+# Begin Source File
+
+SOURCE=..\r_fps.h
+# End Source File
+# Begin Source File
+
 SOURCE=..\r_plane.c
 # End Source File
 # Begin Source File
