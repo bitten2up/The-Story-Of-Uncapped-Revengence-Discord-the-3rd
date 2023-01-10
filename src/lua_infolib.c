@@ -52,6 +52,39 @@ const char *const sfxinfo_wopt[] = {
 	"flags",
 	NULL};
 
+
+//====================
+enum musicinfo_read {
+	musicinfor_name,
+	musicinfor_lumpnum,
+	musicinfor_data,
+	musicinfor_handle,
+	musicinfor_dummyval
+};
+const char *const musicinfo_ropt[] = {
+	"name",
+	"lumpnum",
+	"data",
+	"handle",
+	"dummyval",
+	NULL};
+
+enum musicinfo_write {
+	musicinfow_name,
+	musicinfow_lumpnum,
+	musicinfow_data,
+	musicinfow_handle,
+	musicinfow_dummyval
+};
+const char *const musicinfo_wopt[] = {
+	"name",
+	"lumpnum",
+	"data",
+	"handle",
+	"dummyval",
+	NULL};
+//====================
+
 //
 // Sprite Names
 //
@@ -864,6 +897,7 @@ static int sfxinfo_num(lua_State *L)
 	lua_pushinteger(L, (UINT32)(sfx-S_sfx));
 	return 1;
 }
+
 
 //////////////////////////////
 //

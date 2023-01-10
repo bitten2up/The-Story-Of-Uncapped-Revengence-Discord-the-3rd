@@ -36,7 +36,9 @@
 #endif
 
 /// \brief Frame flags: only the frame number
-#define FF_FRAMEMASK 0x3fff
+#define FF_FRAMEMASK 0x1ff
+/// \brief Frame flags: Thin, paper-like sprite (for collision equivalent, see MF_PAPERCOLLISION)
+#define FF_PAPERSPRITE 0x800
 /// \brief Frame flags: Simple stateless animation
 #define FF_ANIMATE 0x4000
 /// \brief Frame flags: frame always appears full bright
@@ -55,6 +57,7 @@
 #define FF_TRANS70 (tr_trans70<<FF_TRANSSHIFT)
 #define FF_TRANS80 (tr_trans80<<FF_TRANSSHIFT)
 #define FF_TRANS90 (tr_trans90<<FF_TRANSSHIFT)
+#define FF_TRANSA0 (tr_transa0<<FF_TRANSSHIFT)
 
 /**	\brief translucency tables
 
@@ -76,6 +79,7 @@ typedef enum
 	tr_trans70,
 	tr_trans80,
 	tr_trans90,
+	tr_transa0,
 	NUMTRANSMAPS
 } transnum_t;
 

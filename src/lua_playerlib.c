@@ -116,8 +116,6 @@ static int player_get(lua_State *L)
 		lua_pushfixed(L, plr->deltaviewheight);
 	else if (fastcmp(field,"bob"))
 		lua_pushfixed(L, plr->bob);
-	else if (fastcmp(field,"viewrollangle"))
-		lua_pushangle(L, plr->viewrollangle);
 	else if (fastcmp(field,"aiming"))
 		lua_pushangle(L, plr->aiming);
 	else if (fastcmp(field,"health"))
@@ -310,6 +308,9 @@ static int player_get(lua_State *L)
 		lua_pushinteger(L, plr->awayviewtics);
 	else if (fastcmp(field,"awayviewaiming"))
 		lua_pushangle(L, plr->awayviewaiming);
+	// miru: expose and "get" new player struct vars from Lua
+	else if (fastcmp(field,"viewrollangle"))
+		lua_pushangle(L, plr->viewrollangle);
 	else if (fastcmp(field,"spectator"))
 		lua_pushboolean(L, plr->spectator);
 	else if (fastcmp(field,"bot"))
@@ -365,8 +366,6 @@ static int player_set(lua_State *L)
 		plr->deltaviewheight = luaL_checkfixed(L, 3);
 	else if (fastcmp(field,"bob"))
 		plr->bob = luaL_checkfixed(L, 3);
-	else if (fastcmp(field,"viewrollangle"))
-		plr->viewrollangle = luaL_checkangle(L, 3);
 	else if (fastcmp(field,"aiming")) {
 		plr->aiming = luaL_checkangle(L, 3);
 		if (plr == &players[consoleplayer])
@@ -583,6 +582,8 @@ static int player_set(lua_State *L)
 	}
 	else if (fastcmp(field,"awayviewaiming"))
 		plr->awayviewaiming = luaL_checkangle(L, 3);
+	else if (fastcmp(field,"viewrollangle"))
+		plr->viewrollangle = luaL_checkangle(L, 3);
 	else if (fastcmp(field,"spectator"))
 		plr->spectator = lua_toboolean(L, 3);
 	else if (fastcmp(field,"bot"))
@@ -632,7 +633,7 @@ static int power_get(lua_State *L)
 	UINT16 *powers = *((UINT16 **)luaL_checkudata(L, 1, META_POWERS));
 	powertype_t p = luaL_checkinteger(L, 2);
 	if (p >= NUMPOWERS)
-		return luaL_error(L, LUA_QL("powertype_t") " cannot be %u", p);
+		return luaL_error(L, LUA_QL("powertype_t") " cannot be %d", (INT16)p);
 	lua_pushinteger(L, powers[p]);
 	return 1;
 }
@@ -644,7 +645,7 @@ static int power_set(lua_State *L)
 	powertype_t p = luaL_checkinteger(L, 2);
 	UINT16 i = (UINT16)luaL_checkinteger(L, 3);
 	if (p >= NUMPOWERS)
-		return luaL_error(L, LUA_QL("powertype_t") " cannot be %u", p);
+		return luaL_error(L, LUA_QL("powertype_t") " cannot be %d", (INT16)p);
 	if (hud_running)
 		return luaL_error(L, "Do not alter player_t in HUD rendering code!");
 	powers[p] = i;

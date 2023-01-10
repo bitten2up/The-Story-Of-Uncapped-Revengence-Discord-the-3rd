@@ -123,6 +123,12 @@ extern INT16 spstage_start;
 extern INT16 sstage_start;
 extern INT16 sstage_end;
 
+extern INT16 bootmap; // rei/miru: bootmap for loading a map on startup (skips intro+title)
+//extern INT16 returnTobootmap; // rei/miru: return to bootmap when attempting to go to the REAL title?
+
+extern INT16 titlemap;
+extern boolean hidetitlepics;
+
 extern boolean looptitle;
 extern boolean useNightsSS;
 
@@ -247,6 +253,12 @@ typedef struct
 	// NiGHTS stuff.
 	UINT8 numGradedMares;   ///< Internal. For grade support.
 	nightsgrades_t *grades; ///< NiGHTS grades. Allocated dynamically for space reasons. Be careful.
+
+
+	// miru: to use custom mapheaderinfo options, we need to add them to the struct first
+	UINT8 levelwipe;
+	UINT8 postlevelwipe;
+	UINT8 wipecolor;
 
 	// Music stuff.
 	UINT32 musinterfadeout;  ///< Fade out level music on intermission screen in milliseconds

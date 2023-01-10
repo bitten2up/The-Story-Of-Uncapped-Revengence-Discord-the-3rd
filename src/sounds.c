@@ -32,21 +32,8 @@ sfxinfo_t S_sfx[NUMSFX] =
 	various flags. See soundflags_t.
 *****/
   // S_sfx[0] needs to be a dummy for odd reasons. (don't modify this comment)
-//  name, singularity, priority, pitch, volume, data, length, skinsound, usefulness, lumpnum, caption
-  {"none" ,  false,   0,  0, -1, NULL, 0,        -1,  -1, LUMPERROR, "///////////////////////////////"}, // maximum length
-
-  // A HUMBLE REQUEST FROM YOUR FRIENDLY NEIGHBORHOOD toaster!
-  //
-  // If you see a caption that's just "" (shows the lumpname in-game),
-  // and you intend to use the sound associated with it in a mod,
-  // PLEASE give it a caption through SOC or Lua.
-  //
-  // If the first character of the caption is '/', no caption will be
-  // produced; only do  this for "unimportant" sounds that aren't used
-  // to indicate gameplay.
-  //
-  // Closed Captioning may be a niche feature, but it's an important one.
-  // Thank you! ^u^
+//  name, singularity, priority, pitch, volume, data, length, skinsound, usefulness, lumpnum
+  {"none" ,  false,   0,  0, -1, NULL, 0,        -1,  -1, LUMPERROR},
 
   // Skin Sounds
   {"altdi1", false, 192, 16, -1, NULL, 0, SKSPLDET1,  -1, LUMPERROR},
@@ -485,7 +472,7 @@ sfxinfo_t S_sfx[NUMSFX] =
 
 char freeslotnames[sfx_freeslot0 + NUMSFXFREESLOTS + NUMSKINSFXSLOTS][7];
 
-// Prepare free sfx slots to add sfx at run time
+// Prepare free sfx slots to add sfx at run time  (yellowtd: Include musics too~!)
 void S_InitRuntimeSounds (void)
 {
 	sfxenum_t i;
@@ -517,7 +504,6 @@ void S_InitRuntimeSounds (void)
 		S_sfx[i].skinsound = -1;
 		S_sfx[i].usefulness = -1;
 		S_sfx[i].lumpnum = LUMPERROR;
-    S_sfx[i].caption[0] = '\0';
 	}
 }
 
@@ -544,7 +530,6 @@ sfxenum_t S_AddSoundFx(const char *name, boolean singular, INT32 flags, boolean 
 			S_sfx[i].lumpnum = LUMPERROR;
 			S_sfx[i].skinsound = -1;
 			S_sfx[i].usefulness = -1;
-      S_sfx[i].caption[0] = '\0';
 
 			/// \todo if precached load it here
 			S_sfx[i].data = NULL;

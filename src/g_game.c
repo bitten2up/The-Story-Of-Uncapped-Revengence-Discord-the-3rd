@@ -47,8 +47,6 @@
 #include "m_cond.h" // condition sets
 #include "md5.h" // demo checksums
 
-#include "r_fps.h" // uncapped thingies lol
-
 gameaction_t gameaction;
 gamestate_t gamestate = GS_NULL;
 UINT8 ultimatemode = false;
@@ -122,6 +120,12 @@ tic_t timeinmap; // Ticker for time spent in level (used for levelcard display)
 INT16 spstage_start;
 INT16 sstage_start;
 INT16 sstage_end;
+
+INT16 bootmap; // rei/miru: bootmap for loading a map on startup (skips intro+title)
+//INT16 returnTobootmap; // rei/miru: return to bootmap when attempting to go to the REAL title?
+
+INT16 titlemap = 0;
+boolean hidetitlepics = false;
 
 boolean looptitle = false;
 boolean useNightsSS = false;
@@ -1704,6 +1708,21 @@ void G_DoLoadLevel(boolean resetplayer)
 	if (gamestate == GS_INTERMISSION)
 		Y_EndIntermission();
 
+	// cleanup
+	if (titlemapinaction == TITLEMAP_LOADING)
+	{
+		if (W_CheckNumForName(G_BuildMapName(gamemap)) == LUMPERROR)
+		{
+			titlemap = 0; // let's not infinite recursion ok
+			Command_ExitGame_f();
+			return;
+		}
+
+		titlemapinaction = TITLEMAP_RUNNING;
+	}
+	else
+		titlemapinaction = TITLEMAP_OFF;
+
 	G_SetGamestate(GS_LEVEL);
 
 	for (i = 0; i < MAXPLAYERS; i++)
@@ -1713,7 +1732,7 @@ void G_DoLoadLevel(boolean resetplayer)
 	}
 
 	// Setup the level.
-	if (!P_SetupLevel(false))
+	if (!P_SetupLevel(false)) // this never returns false?
 	{
 		// fail so reset game stuff
 		Command_ExitGame_f();
@@ -2022,8 +2041,6 @@ void G_Ticker(boolean run)
 			ST_Ticker();
 			AM_Ticker();
 			HU_Ticker();
-			//if (run)
-				//R_UpdateViewInterpolation();
 			break;
 
 		case GS_INTERMISSION:
@@ -2068,12 +2085,7 @@ void G_Ticker(boolean run)
 			break;
 
 		case GS_TITLESCREEN:
-			//P_Ticker(run);
-			//if (run)
-				//R_UpdateViewInterpolation(); // then intentionally fall through
-			/* FALLTHRU */
-			break;
-			
+			if (titlemapinaction) P_Ticker(run); // then intentionally fall through
 		case GS_WAITINGPLAYERS:
 			F_TitleScreenTicker(run);
 			break;
@@ -5844,3 +5856,48 @@ INT32 G_TicsToMilliseconds(tic_t tics)
 	return (INT32)((tics%TICRATE) * (1000.00f/TICRATE));
 }
 
+//miru: change the displayed player
+// player - player to forward the function to
+// displayNumber - the player number (node) to view
+// setAllDisplays - set all displays to the player number/node specified
+void G_SetDisplayPlayer(player_t *player, INT32 displayNumber, boolean setAllDisplays)
+{
+	//TODO: fix black flashes when touching controls (this has to do with
+	//((cmd->forwardmove || cmd->sidemove || cmd->buttons) && displayplayer != consoleplayer) )
+	//TODO: proper implementation for using player node instead of -1 (unsure how)
+	if (gamestate == GS_LEVEL)
+	{
+		// no, not for non-sp
+		if (!netgame)
+			displayplayer = consoleplayer;
+		else
+		{
+			// the player has to exist or you just get a bleeding display
+			if (playeringame[displayNumber] || (players[displayplayer].spectator && player == &players[displayplayer]))
+			{
+				// switch the display number locally
+				if (P_IsLocalPlayer(player) && displayplayer == consoleplayer)
+				{
+					displayplayer = displayNumber;
+				}
+				// or force all
+				else if (setAllDisplays == true)
+				{
+					displayplayer = displayNumber;
+				}
+
+				// tell who's the view
+				//CONS_Printf(M_GetText("Viewpoint: %s\n"), player_names[displayplayer]);
+			}
+			// Setting as -1 resets your view to normal
+			else if (displayNumber == -1 && P_IsLocalPlayer(player)
+					&& displayplayer != consoleplayer)
+				displayplayer = consoleplayer;
+			else
+			{
+				// or do...nothing
+				//CONS_Printf("Player doesn't exist (or viewing self).\n");
+			}
+		}
+	}
+}

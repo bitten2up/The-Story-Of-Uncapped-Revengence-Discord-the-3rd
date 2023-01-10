@@ -16,7 +16,6 @@
 #include "console.h"
 #include "am_map.h"
 #include "i_system.h"
-#include "i_sound.h" // closed captions
 #include "i_video.h"
 #include "r_local.h"
 #include "r_sky.h"
@@ -30,7 +29,6 @@
 #include "d_clisrv.h"
 #include "f_finale.h"
 
-#include "r_fps.h" // Frame interpolation/uncapped
 
 #if defined (USEASM) && !defined (NORUSEASM)//&& (!defined (_MSC_VER) || (_MSC_VER <= 1200))
 #define RUSEASM //MSC.NET can't patch itself
@@ -168,6 +166,9 @@ void SCR_SetMode(void)
 	if (SCR_IsAspectCorrect(vid.width, vid.height))
 		CONS_Alert(CONS_WARNING, M_GetText("Resolution is not aspect-correct!\nUse a multiple of %dx%d\n"), BASEVIDWIDTH, BASEVIDHEIGHT);
 #endif*/
+
+	wallcolfunc = walldrawerfunc;
+
 	// set the apprpriate drawer for the sky (tall or INT16)
 	setmodeneeded = 0;
 }
@@ -258,7 +259,6 @@ void SCR_Startup(void)
 
 	V_Init();
 	CV_RegisterVar(&cv_ticrate);
-	CV_RegisterVar(&cv_fpscap);
 	CV_RegisterVar(&cv_constextsize);
 
 	V_SetPalette(0);
@@ -387,9 +387,6 @@ void SCR_ChangeFullscreen(void)
 #endif
 }
 
-//static boolean fpsgraph[TICRATE];
-//static tic_t lasttic;
-
 boolean SCR_IsAspectCorrect(INT32 width, INT32 height)
 {
 	return
@@ -399,156 +396,34 @@ boolean SCR_IsAspectCorrect(INT32 width, INT32 height)
 	 );
 }
 
-double averageFPS = 0.0f;
-
-#define FPS_SAMPLE_RATE (50000) // How often to update FPS samples, in microseconds
-#define NUM_FPS_SAMPLES 16 // Number of samples to store
-
-static double fps_samples[NUM_FPS_SAMPLES];
-
-void SCR_CalculateFPS(void)
-{
-	static boolean init = false;
-
-	static precise_t startTime = 0;
-	precise_t endTime = 0;
-
-	static precise_t updateTime = 0;
-	int updateElapsed = 0;
-	int i;
-
-	endTime = I_GetPreciseTime();
-
-	if (init == false)
-	{
-		startTime = updateTime = endTime;
-		init = true;
-		return;
-	}
-
-	updateElapsed = I_PreciseToMicros(endTime - updateTime);
-
-	if (updateElapsed >= FPS_SAMPLE_RATE)
-	{
-		static int sampleIndex = 0;
-		int frameElapsed = I_PreciseToMicros(endTime - startTime);
-
-		fps_samples[sampleIndex] = frameElapsed / 1000.0f;
-
-		sampleIndex++;
-		if (sampleIndex >= NUM_FPS_SAMPLES)
-			sampleIndex = 0;
-
-		averageFPS = 0.0f;
-		for (i = 0; i < NUM_FPS_SAMPLES; i++)
-		{
-			averageFPS += fps_samples[i];
-		}
-		averageFPS = 1000.0f / (averageFPS / NUM_FPS_SAMPLES);
-
-		updateTime = endTime;
-	}
-
-	startTime = endTime;
-}
-
-
 // XMOD FPS display
 // moved out of os-specific code for consistency
+static boolean fpsgraph[TICRATE];
+static tic_t lasttic;
+
 void SCR_DisplayTicRate(void)
 {
+	tic_t i;
+	tic_t ontic = I_GetTime();
+	tic_t totaltics = 0;
 	INT32 ticcntcolor = 0;
-	const INT32 h = vid.height-(8*vid.dupy);
-	UINT32 cap = R_GetFramerateCap();
-	double fps = round(averageFPS);
 
-	if (gamestate == GS_NULL)
-		return;
+	for (i = lasttic + 1; i < TICRATE+lasttic && i < ontic; ++i)
+		fpsgraph[i % TICRATE] = false;
 
-	if (cap > 0)
-	{
-		if (fps <= cap / 2.0) ticcntcolor = V_REDMAP;
-		else if (fps <= cap * 0.90) ticcntcolor = V_YELLOWMAP;
-		else ticcntcolor = V_GREENMAP;
-	}
-	else
-	{
-		ticcntcolor = V_GREENMAP;
-	}
+	fpsgraph[ontic % TICRATE] = true;
 
-	if (cv_ticrate.value == 2) // compact counter
-	{
-		V_DrawRightAlignedString(vid.width, h,
-			ticcntcolor|V_NOSCALESTART, va("%04.2f", averageFPS)); // use averageFPS directly
-	}
-	else if (cv_ticrate.value == 1) // full counter
-	{
-		if (cap > 0)
-		{
-			V_DrawString(vid.width-(104*vid.dupx), h,
-				V_YELLOWMAP|V_NOSCALESTART, "FPS:");
-			V_DrawString(vid.width-(72*vid.dupx), h,
-				ticcntcolor|V_NOSCALESTART, va("%4.0f/%4u", fps, cap));
-		}
-		else
-		{
-			V_DrawString(vid.width-(88*vid.dupx), h,
-				V_YELLOWMAP|V_NOSCALESTART, "FPS:");
-			V_DrawString(vid.width-(56*vid.dupx), h,
-				ticcntcolor|V_NOSCALESTART, va("%4.0f", fps));
-		}
-	}
-}
+	for (i = 0;i < TICRATE;++i)
+		if (fpsgraph[i])
+			++totaltics;
 
-void SCR_ClosedCaptions(void)
-{
-	UINT8 i;
-	boolean gamestopped = (paused || P_AutoPause());
-	INT32 basey = BASEVIDHEIGHT;
+	if (totaltics <= TICRATE/2) ticcntcolor = V_REDMAP;
+	else if (totaltics == TICRATE) ticcntcolor = V_GREENMAP;
 
-	if (gamestate != wipegamestate)
-		return;
+	V_DrawString(vid.width-(24*vid.dupx), vid.height-(16*vid.dupy),
+		V_YELLOWMAP|V_NOSCALESTART, "FPS");
+	V_DrawString(vid.width-(40*vid.dupx), vid.height-( 8*vid.dupy),
+		ticcntcolor|V_NOSCALESTART, va("%02d/%02u", totaltics, TICRATE));
 
-	if (gamestate == GS_LEVEL)
-	{
-		if (splitscreen)
-			basey -= 8;
-		else if ((modeattacking == ATTACKING_NIGHTS)
-		|| (!(maptol & TOL_NIGHTS)))
-			basey -= 16;
-	}
-
-	for (i = 0; i < NUMCAPTIONS; i++)
-	{
-		INT32 flags, y;
-		char dot;
-		boolean music;
-
-		if (!closedcaptions[i].s)
-			continue;
-
-		music = (closedcaptions[i].s-S_sfx == sfx_None);
-
-		if (music && !gamestopped && (closedcaptions[i].t < flashingtics) && (closedcaptions[i].t & 1))
-			continue;
-
-		flags = V_SNAPTORIGHT|V_SNAPTOBOTTOM|V_ALLOWLOWERCASE;
-		y = basey-((i + 2)*10);
-
-		if (closedcaptions[i].b)
-			y -= (closedcaptions[i].b--)*vid.dupy;
-
-		if (closedcaptions[i].t < CAPTIONFADETICS)
-			flags |= (((CAPTIONFADETICS-closedcaptions[i].t)/2)*V_10TRANS);
-
-		if (music)
-			dot = '\x19';
-		else if (closedcaptions[i].c && closedcaptions[i].c->origin)
-			dot = '\x1E';
-		else
-			dot = ' ';
-
-		V_DrawRightAlignedString(BASEVIDWIDTH - 20, y, flags,
-			va("%c [%s]", dot, (closedcaptions[i].s->caption[0] ? closedcaptions[i].s->caption : closedcaptions[i].s->name)));
-	}
+	lasttic = ontic;
 }

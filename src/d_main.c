@@ -76,8 +76,6 @@ int	snprintf(char *str, size_t n, const char *fmt, ...);
 #include "keys.h"
 #include "filesrch.h" // refreshdirmenu, mainwadstally
 
-#include "r_fps.h" // uncapped stuffs lol
-
 #ifdef CMAKECONFIG
 #include "config.h"
 #else
@@ -274,7 +272,7 @@ static void D_Display(void)
 		if (rendermode != render_none)
 		{
 			// Fade to black first
-			if (gamestate != GS_LEVEL // fades to black on its own timing, always
+			if (!(gamestate == GS_LEVEL || (gamestate == GS_TITLESCREEN && titlemapinaction)) // fades to black on its own timing, always
 			 && wipedefs[wipedefindex] != UINT8_MAX)
 			{
 				F_WipeStartScreen();
@@ -290,6 +288,12 @@ static void D_Display(void)
 	// do buffered drawing
 	switch (gamestate)
 	{
+		case GS_TITLESCREEN:
+			if (!titlemapinaction) {
+				F_TitleScreenDrawer();
+				break;
+			}
+			// Intentional fall-through
 		case GS_LEVEL:
 			if (!gametic)
 				break;
@@ -337,10 +341,6 @@ static void D_Display(void)
 			HU_Drawer();
 			break;
 
-		case GS_TITLESCREEN:
-			F_TitleScreenDrawer();
-			break;
-
 		case GS_WAITINGPLAYERS:
 			// The clientconnect drawer is independent...
 		case GS_DEDICATEDSERVER:
@@ -348,13 +348,14 @@ static void D_Display(void)
 			break;
 	}
 
-	if (gamestate == GS_LEVEL)
+	// clean up border stuff
+	// see if the border needs to be initially drawn
+	if (gamestate == GS_LEVEL || (gamestate == GS_TITLESCREEN && titlemapinaction))
 	{
 		// draw the view directly
-		if (cv_renderview.value && !automapactive)
+
+		if (!automapactive && !dedicated && cv_renderview.value)
 		{
-			R_ApplyLevelInterpolators(R_UsingFrameInterpolation() ? rendertimefrac : FRACUNIT);
-			
 			if (players[displayplayer].mo || players[displayplayer].playerstate == PST_DEAD)
 			{
 				topleft = screens[0] + viewwindowy*vid.width + viewwindowx;
@@ -393,9 +394,6 @@ static void D_Display(void)
 			// Image postprocessing effect
 			if (rendermode == render_soft)
 			{
-				if (!splitscreen)
-					R_ApplyViewMorph();
-					
 				if (postimgtype)
 					V_DoPostProcessor(0, postimgtype, postimgparam);
 				if (postimgtype2)
@@ -413,8 +411,13 @@ static void D_Display(void)
 			lastdraw = false;
 		}
 
-		ST_Drawer();
-		HU_Drawer();
+		if (gamestate == GS_LEVEL)
+		{
+			ST_Drawer();
+			HU_Drawer();
+		}
+		else
+			F_TitleScreenDrawer();
 	}
 
 	// change gamma if needed
@@ -458,8 +461,19 @@ static void D_Display(void)
 
 		if (rendermode != render_none)
 		{
-			F_WipeEndScreen();
-			F_RunWipe(wipedefs[wipedefindex], gamestate != GS_TIMEATTACK);
+			// miru: we can use the mapheaderinfo to change the forced wipe the instant the map loads
+			if (mapheaderinfo[gamemap-1] && mapheaderinfo[gamemap-1]->postlevelwipe && mapheaderinfo[gamemap-1]->postlevelwipe < 100)
+			{
+				F_WipeStartScreen();
+				V_DrawFill(0, 0, BASEVIDWIDTH, BASEVIDHEIGHT, mapheaderinfo[gamemap-1]->wipecolor);
+				F_WipeEndScreen();
+				F_RunWipe(mapheaderinfo[gamemap-1]->postlevelwipe,  gamestate != GS_TIMEATTACK);
+			}
+			else
+			{
+				F_WipeEndScreen();
+				F_RunWipe(wipedefs[wipedefindex], gamestate != GS_TIMEATTACK);
+			}
 		}
 	}
 
@@ -507,9 +521,6 @@ tic_t rendergametic;
 void D_SRB2Loop(void)
 {
 	tic_t oldentertics = 0, entertic = 0, realtics = 0, rendertimeout = INFTICS;
-
-	boolean ticked = interp = doDisplay = screenUpdate = false;
-	double frameEnd = 0.0;
 
 	if (dedicated)
 		server = true;
@@ -564,12 +575,6 @@ void D_SRB2Loop(void)
 		entertic = I_GetTime();
 		realtics = entertic - oldentertics;
 		oldentertics = entertic;
-		
-		if (demoplayback && gamestate == GS_LEVEL)
-		{
-			// Nicer place to put this.
-			realtics = realtics * cv_playbackspeed.value;
-		}
 
 		refreshdirmenu = 0; // not sure where to put this, here as good as any?
 
@@ -578,10 +583,6 @@ void D_SRB2Loop(void)
 			if (debugload)
 				debugload--;
 #endif
-
-		interp = R_UsingFrameInterpolation() && !dedicated;
-		doDisplay = screenUpdate = false;
-		ticked = false;
 
 		if (!realtics && !singletics)
 		{
@@ -634,7 +635,6 @@ void D_SRB2Loop(void)
 
 		// consoleplayer -> displayplayer (hear sounds from viewpoint)
 		S_UpdateSounds(); // move positional sounds
-		S_UpdateClosedCaptions();
 
 		// check for media change, loop music..
 		I_UpdateCD();
@@ -646,19 +646,6 @@ void D_SRB2Loop(void)
 #ifdef HAVE_BLUA
 		LUA_Step();
 #endif
-
-		// Fully completed frame made.
-		frameEnd = I_GetFrameTime();
-		if (!singletics && !dedicated)
-		{
-			I_FrameCapSleep(frameEnd);
-		}
-		else if (dedicated)
-		{
-			// Preserve the pre-interp sleeping behavior for dedicated mode
-			I_Sleep();
-		}
-
 	}
 }
 
@@ -681,6 +668,9 @@ void D_AdvanceDemo(void)
 void D_StartTitle(void)
 {
 	INT32 i;
+
+	S_StopMusic();
+
 	if (netgame)
 	{
 		if (gametype == GT_COOP)
@@ -1349,7 +1339,23 @@ void D_SRB2Main(void)
 		ultimatemode = true;
 	}
 
-	if (autostart || netgame)
+	// rei/miru: bootmap (Idea: starts the game on a predefined map)
+	if (bootmap && !(M_CheckParm("-warp") && M_IsNextParm()))
+	{
+		pstartmap = bootmap;
+
+		if (pstartmap < 1 || pstartmap > NUMMAPS)
+			I_Error("Cannot warp to map %d (out of range)\n", pstartmap);
+		else
+		{
+			//if (!M_CheckParm("-server"))
+				//G_SetGameModified(true);
+			autostart = true;
+		}
+	}
+	//CONS_Printf("BOOT_MAP: %d\n", bootmap);
+
+	if (autostart || netgame || M_CheckParm("+connect") || M_CheckParm("-connect"))
 	{
 		gameaction = ga_nothing;
 

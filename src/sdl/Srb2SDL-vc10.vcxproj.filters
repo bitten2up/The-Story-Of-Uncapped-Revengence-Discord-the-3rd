@@ -399,9 +399,6 @@
     <ClInclude Include="..\r_main.h">
       <Filter>R_Rend</Filter>
     </ClInclude>
-     <ClInclude Include="..\r_fps.h">
-      <Filter>R_Rend</Filter>
-    </ClInclude>
     <ClInclude Include="..\r_plane.h">
       <Filter>R_Rend</Filter>
     </ClInclude>
@@ -808,9 +805,6 @@
       <Filter>R_Rend</Filter>
     </ClCompile>
     <ClCompile Include="..\r_main.c">
-      <Filter>R_Rend</Filter>
-    </ClCompile>
-    <ClCompile Include="..\r_fps.c">
       <Filter>R_Rend</Filter>
     </ClCompile>
     <ClCompile Include="..\r_plane.c">

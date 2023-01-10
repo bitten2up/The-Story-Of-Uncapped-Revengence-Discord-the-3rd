@@ -270,8 +270,6 @@ typedef struct player_s
 	// bounded/scaled total momentum.
 	fixed_t bob;
 
-	angle_t viewrollangle;
-
 	// Mouse aiming, where the guy is looking at!
 	// It is updated with cmd->aiming.
 	angle_t aiming;
@@ -428,6 +426,9 @@ typedef struct player_s
 	mobj_t *awayviewmobj;
 	INT32 awayviewtics;
 	angle_t awayviewaiming; // Used for cut-away view
+
+	// miru: let's add stuff to player struct!
+	angle_t viewrollangle; // Roll angle (software)
 
 	boolean spectator;
 	UINT8 bot;

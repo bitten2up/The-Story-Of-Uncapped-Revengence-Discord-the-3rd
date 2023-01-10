@@ -84,9 +84,6 @@ struct sfxinfo_struct
 
 	// lump number of sfx
 	lumpnum_t lumpnum;
-
-	// closed caption info/wiki table bait
-	char caption[32];
 };
 
 // the complete set of sound effects

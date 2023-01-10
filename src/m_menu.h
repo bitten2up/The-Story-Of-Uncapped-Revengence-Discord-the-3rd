@@ -304,4 +304,6 @@ void Addons_option_Onchange(void);
 	NULL\
 }
 
+void M_StartServer(INT32 choice);
+
 #endif //__X_MENU__

@@ -144,15 +144,16 @@ extern FILE *logstream;
 #ifdef DEVELOP
 #define VERSION    0 // Game version
 #define SUBVERSION 0 // more precise version number
-#define VERSIONSTRING "SRB2 v2.1.25 TSOURDT3RD (By StarManiaKG#4884) DEV. EDITION"
-#define VERSIONSTRINGW L"SRB2 v2.1.25 TSOURDT3RD (By StarManiaKG#4884) DEV. EDITION"
+#define VERSIONSTRING "Development EXE"
+#define VERSIONSTRINGW L"Development EXE"
 // most interface strings are ignored in development mode.
 // we use comprevision and compbranch instead.
 #else
-#define VERSION    201 // Game version
-#define SUBVERSION 25  // more precise version number
-#define VERSIONSTRING "v2.1.25"
-#define VERSIONSTRINGW L"v2.1.25"
+#define VERSION    100 // Game version
+#define SUBVERSION 7  // more precise version number
+#define VERSIONSTRING "PlusC v1.07.0 (v2.1.25)"
+#define VERSIONSTRINGW L"PlusC v1.07.0 (v2.1.25)"
+
 // Hey! If you change this, add 1 to the MODVERSION below!
 // Otherwise we can't force updates!
 #endif
@@ -211,13 +212,13 @@ extern FILE *logstream;
 // The Modification ID; must be obtained from Rob ( https://mb.srb2.org/private.php?do=newpm&u=546 ).
 // DO NOT try to set this otherwise, or your modification will be unplayable through the Master Server.
 // "12" is the default mod ID for version 2.1
-#define MODID 12
+#define MODID 15
 
 // The Modification Version, starting from 1. Do not follow your version string for this,
 // it's only for detection of the version the player is using so the MS can alert them of an update.
 // Only set it higher, not lower, obviously.
 // Note that we use this to help keep internal testing in check; this is why v2.1.0 is not version "1".
-#define MODVERSION 30
+#define MODVERSION 9
 
 // To version config.cfg, MAJOREXECVERSION is set equal to MODVERSION automatically.
 // Increment MINOREXECVERSION whenever a config change is needed that does not correspond
@@ -323,9 +324,9 @@ enum {
 // Name of local directory for config files and savegames
 #if !defined(_arch_dreamcast) && !defined(_WIN32_WCE) && !defined(GP2X) && !defined(_WII) && !defined(_PS3)
 #if (((defined (__unix__) && !defined (MSDOS)) || defined (UNIXCOMMON)) && !defined (__CYGWIN__)) && !defined (__APPLE__)
-#define DEFAULTDIR ".srb2-21"
+#define DEFAULTDIR ".srb2"
 #else
-#define DEFAULTDIR "srb2-21"
+#define DEFAULTDIR "srb2"
 #endif
 #endif
 
@@ -408,7 +409,6 @@ extern INT32 cv_debug;
 #define DBG_MEMORY      0x0200
 #define DBG_SETUP       0x0400
 #define DBG_LUA         0x0800
-#define DBG_VIEWMORPH   0x1000
 
 // =======================
 // Misc stuff for later...
@@ -476,10 +476,10 @@ extern const char *compdate, *comptime, *comprevision, *compbranch;
 //#define DELFILE
 
 ///	Allows the use of devmode in multiplayer. AKA "fishcake"
-#define NETGAME_DEVMODE
+//#define NETGAME_DEVMODE
 
 ///	Allows gravity changes in netgames, no questions asked.
-#define NETGAME_GRAVITY
+//#define NETGAME_GRAVITY
 
 ///	Dumps the contents of a network save game upon consistency failure for debugging.
 //#define DUMPCONSISTENCY

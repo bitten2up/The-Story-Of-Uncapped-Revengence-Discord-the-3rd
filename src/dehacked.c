@@ -79,6 +79,8 @@ boolean deh_loaded = false;
 static int dbg_line;
 
 static boolean gamedataadded = false;
+static boolean titlechanged = false;
+static boolean introchanged = false;
 
 #ifdef DELFILE
 typedef struct undehacked_s
@@ -1344,6 +1346,20 @@ static void readlevelheader(MYFILE *f, INT32 num)
 					mapheaderinfo[num-1]->menuflags |= LF2_NOVISITNEEDED;
 				else
 					mapheaderinfo[num-1]->menuflags &= ~LF2_NOVISITNEEDED;
+			}
+
+			// miru: we can build custom map header words here
+			else if (fastcmp(word, "LEVELWIPE"))
+			{
+				mapheaderinfo[num-1]->levelwipe = (UINT8)i;
+			}
+			else if (fastcmp(word, "POSTLEVELWIPE"))
+			{
+				mapheaderinfo[num-1]->postlevelwipe = (UINT8)i;
+			}
+			else if (fastcmp(word, "WIPECOLOR"))
+			{
+				mapheaderinfo[num-1]->wipecolor = (UINT8)i;
 			}
 			else
 				deh_warning("Level header %d: unknown word '%s'", num, word);
@@ -3034,16 +3050,40 @@ static void readmaincfg(MYFILE *f)
 				// range check, you morons.
 				if (introtoplay > 128)
 					introtoplay = 128;
+				introchanged = true;
 			}
 			else if (fastcmp(word, "LOOPTITLE"))
 			{
 				DEH_WriteUndoline(word, va("%d", looptitle), UNDO_NONE);
-				looptitle = (value || word2[0] == 'T' || word2[0] == 'Y');
+				looptitle = (boolean)(value || word2[0] == 'T' || word2[0] == 'Y');
+				titlechanged = true;
+			}
+			else if (fastcmp(word, "TITLEMAP"))
+			{
+				// Support using the actual map name,
+				// i.e., Level AB, Level FZ, etc.
+
+				// Convert to map number
+				if (word2[0] >= 'A' && word2[0] <= 'Z')
+					value = M_MapNumber(word2[0], word2[1]);
+				else
+					value = get_number(word2);
+
+				DEH_WriteUndoline(word, va("%d", titlemap), UNDO_NONE);
+				titlemap = (INT16)value;
+				titlechanged = true;
+			}
+			else if (fastcmp(word, "HIDETITLEPICS"))
+			{
+				DEH_WriteUndoline(word, va("%d", hidetitlepics), UNDO_NONE);
+				hidetitlepics = (boolean)(value || word2[0] == 'T' || word2[0] == 'Y');
+				titlechanged = true;
 			}
 			else if (fastcmp(word, "TITLESCROLLSPEED"))
 			{
 				DEH_WriteUndoline(word, va("%d", titlescrollspeed), UNDO_NONE);
 				titlescrollspeed = get_number(word2);
+				titlechanged = true;
 			}
 			else if (fastcmp(word, "CREDITSCUTSCENE"))
 			{
@@ -3062,16 +3102,19 @@ static void readmaincfg(MYFILE *f)
 			{
 				DEH_WriteUndoline(word, va("%d", numDemos), UNDO_NONE);
 				numDemos = (UINT8)get_number(word2);
+				titlechanged = true;
 			}
 			else if (fastcmp(word, "DEMODELAYTIME"))
 			{
 				DEH_WriteUndoline(word, va("%d", demoDelayTime), UNDO_NONE);
 				demoDelayTime = get_number(word2);
+				titlechanged = true;
 			}
 			else if (fastcmp(word, "DEMOIDLETIME"))
 			{
 				DEH_WriteUndoline(word, va("%d", demoIdleTime), UNDO_NONE);
 				demoIdleTime = get_number(word2);
+				titlechanged = true;
 			}
 			else if (fastcmp(word, "USE1UPSOUND"))
 			{
@@ -3110,16 +3153,36 @@ static void readmaincfg(MYFILE *f)
 				strcatbf(savegamename, srb2home, PATHSEP);
 
 				gamedataadded = true;
+				titlechanged = true;
 			}
 			else if (fastcmp(word, "RESETDATA"))
 			{
 				DEH_WriteUndoline(word, "0", UNDO_TODO); /// \todo
 				P_ResetData(value);
+				titlechanged = true;
 			}
 			else if (fastcmp(word, "CUSTOMVERSION"))
 			{
 				DEH_WriteUndoline(word, customversionstring, UNDO_NONE);
 				strlcpy(customversionstring, word2, sizeof (customversionstring));
+				//titlechanged = true;
+			}
+			else if (fastcmp(word, "BOOTMAP"))
+			{
+				// rei/miru: bootmap definition for maincfg
+
+				// Support using the actual map name,
+				// i.e., Level AB, Level FZ, etc.
+
+				// Convert to map number
+				if (word2[0] >= 'A' && word2[0] <= 'Z')
+					value = M_MapNumber(word2[0], word2[1]);
+				else
+					value = get_number(word2);
+
+				DEH_WriteUndoline(word, va("%d", bootmap), UNDO_NONE);
+				bootmap = (INT16)value;
+				//titlechanged = true;
 			}
 			else
 				deh_warning("Maincfg: unknown word '%s'", word);
@@ -3332,7 +3395,7 @@ static void DEH_LoadDehackedFile(MYFILE *f, UINT16 wad)
 	for (i = 0; i < NUMSFX; i++)
 		savesfxnames[i] = S_sfx[i].name;
 
-	gamedataadded = false;
+	gamedataadded = titlechanged = introchanged = false;
 
 	// it doesn't test the version of SRB2 and version of dehacked file
 	dbg_line = -1; // start at -1 so the first line is 0.
@@ -3702,6 +3765,14 @@ static void DEH_LoadDehackedFile(MYFILE *f, UINT16 wad)
 
 	if (gamedataadded)
 		G_LoadGameData();
+
+	if (gamestate == GS_TITLESCREEN)
+	{
+		if (introchanged)
+			COM_BufAddText("playintro");
+		else if (titlechanged)
+			COM_BufAddText("exitgame"); // Command_ExitGame_f() but delayed
+	}
 
 	dbg_line = -1;
 	if (deh_num_warning)
@@ -6683,7 +6754,7 @@ static const char *const MOBJFLAG_LIST[] = {
 	"SHOOTABLE",
 	"NOSECTOR",
 	"NOBLOCKMAP",
-	"AMBUSH",
+	"PAPERCOLLISION",
 	"PUSHABLE",
 	"BOSS",
 	"SPAWNCEILING",
@@ -6741,6 +6812,7 @@ static const char *const MOBJFLAG2_LIST[] = {
 	"BOSSNOTRAP",	// No Egg Trap after boss
 	"BOSSFLEE",		// Boss is fleeing!
 	"BOSSDEAD",		// Boss is dead! (Not necessarily fleeing, if a fleeing point doesn't exist.)
+	"AMBUSH",       // Alternate behaviour typically set by MTF_AMBUSH
 	NULL
 };
 
@@ -7034,6 +7106,7 @@ struct {
 
 	// Frame settings
 	{"FF_FRAMEMASK",FF_FRAMEMASK},
+	{"FF_PAPERSPRITE",FF_PAPERSPRITE},
 	{"FF_ANIMATE",FF_ANIMATE},
 	{"FF_FULLBRIGHT",FF_FULLBRIGHT},
 	{"FF_TRANSMASK",FF_TRANSMASK},
@@ -7048,6 +7121,7 @@ struct {
 	{"FF_TRANS70",FF_TRANS70},
 	{"FF_TRANS80",FF_TRANS80},
 	{"FF_TRANS90",FF_TRANS90},
+	{"FF_TRANSA0",FF_TRANSA0},
 	// compatibility
 	// Transparency for SOCs is pre-shifted
 	{"TR_TRANS10",tr_trans10<<FF_TRANSSHIFT},
@@ -7059,6 +7133,7 @@ struct {
 	{"TR_TRANS70",tr_trans70<<FF_TRANSSHIFT},
 	{"TR_TRANS80",tr_trans80<<FF_TRANSSHIFT},
 	{"TR_TRANS90",tr_trans90<<FF_TRANSSHIFT},
+	{"TR_TRANSA0",tr_transa0<<FF_TRANSSHIFT},
 	// Transparency for Lua is not, unless capitalized as above.
 	{"tr_trans10",tr_trans10},
 	{"tr_trans20",tr_trans20},
@@ -7069,6 +7144,7 @@ struct {
 	{"tr_trans70",tr_trans70},
 	{"tr_trans80",tr_trans80},
 	{"tr_trans90",tr_trans90},
+	{"tr_transa0",tr_transa0},
 	{"NUMTRANSMAPS",NUMTRANSMAPS},
 
 	// Type of levels
@@ -8302,6 +8378,12 @@ static inline int lib_getenum(lua_State *L)
 		return 1;
 	} else if (fastcmp(word,"paused")) {
 		lua_pushboolean(L, paused);
+		return 1;
+	} else if (fastcmp(word,"titlemap")) {
+		lua_pushinteger(L, titlemap);
+		return 1;
+	} else if (fastcmp(word,"titlemapinaction")) {
+		lua_pushboolean(L, (titlemapinaction != TITLEMAP_OFF));
 		return 1;
 	} else if (fastcmp(word,"gametype")) {
 		lua_pushinteger(L, gametype);

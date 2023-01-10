@@ -155,8 +155,6 @@ extern boolean R_SSE2;
 extern viddef_t vid;
 extern INT32 setmodeneeded; // mode number to set if needed, or 0
 
-extern double averageFPS;
-
 extern INT32 scr_bpp;
 extern UINT8 *scr_borderpatch; // patch used to fill the view borders
 
@@ -167,29 +165,20 @@ extern consvar_t cv_vidwait;
 // quick fix for tall/short skies, depending on bytesperpixel
 extern void (*walldrawerfunc)(void);
 
-// Initialize the Screen
-void SCR_Startup (void);
-
 // Change video mode, only at the start of a refresh.
 void SCR_SetMode(void);
-
 // Recalc screen size dependent stuff
 void SCR_Recalc(void);
-
 // Check parms once at startup
 void SCR_CheckDefaultMode(void);
-
 // Set the mode number which is saved in the config
 void SCR_SetDefaultMode (void);
 
-// Calculate Frames
-void SCR_CalculateFPS(void);
+void SCR_Startup (void);
 
 FUNCMATH boolean SCR_IsAspectCorrect(INT32 width, INT32 height);
 
 // move out to main code for consistency
 void SCR_DisplayTicRate(void);
-void SCR_ClosedCaptions(void);
-
 #undef DNWH
 #endif //__SCREEN_H__

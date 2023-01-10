@@ -72,7 +72,7 @@ UINT8 *dc_source;
 // -----------------------
 // translucency stuff here
 // -----------------------
-#define NUMTRANSTABLES 9 // how many translucency tables are used
+#define NUMTRANSTABLES 10 // how many translucency tables are used
 
 UINT8 *transtables; // translucency tables
 
@@ -222,6 +222,10 @@ void R_InitTranslationTables(void)
 	W_ReadLump(W_GetNumForName("TRANS70"), transtables+0x60000);
 	W_ReadLump(W_GetNumForName("TRANS80"), transtables+0x70000);
 	W_ReadLump(W_GetNumForName("TRANS90"), transtables+0x80000);
+
+	size_t transa0 = W_CheckNumForName("TRANSA0");
+	if (transa0 != LUMPERROR)
+		W_ReadLump(transa0, transtables+0x90000);
 #endif
 }
 

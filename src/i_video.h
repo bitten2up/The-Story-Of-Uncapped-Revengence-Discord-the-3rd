@@ -135,6 +135,4 @@ void I_BeginRead(void);
 */
 void I_EndRead(void);
 
-UINT32 I_GetRefreshRate(void);
-
 #endif

@@ -118,7 +118,6 @@ set(SRB2_CORE_RENDER_SOURCES
 	r_data.c
 	r_draw.c
 	r_main.c
-	r_fps.c
 	r_plane.c
 	r_segs.c
 	r_sky.c
@@ -131,7 +130,6 @@ set(SRB2_CORE_RENDER_SOURCES
 	r_draw.h
 	r_local.h
 	r_main.h
-	r_fps.c
 	r_plane.h
 	r_segs.h
 	r_sky.h
@@ -275,6 +273,7 @@ if(${SRB2_CONFIG_HAVE_BLUA})
 		blua/lfunc.c
 		blua/lgc.c
 		blua/linit.c
+		blua/liolib.c
 		blua/llex.c
 		blua/lmem.c
 		blua/lobject.c

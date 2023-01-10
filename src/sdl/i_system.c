@@ -133,10 +133,10 @@ typedef LPVOID (WINAPI *p_MapViewOfFile) (HANDLE, DWORD, DWORD, DWORD, SIZE_T);
 
 // Locations for searching the srb2.srb
 #if defined (__unix__) || defined(__APPLE__) || defined (UNIXCOMMON)
-#define DEFAULTWADLOCATION1 "/usr/local/share/games/SRB2-21"
-#define DEFAULTWADLOCATION2 "/usr/local/games/SRB2-21"
-#define DEFAULTWADLOCATION3 "/usr/share/games/SRB2-21"
-#define DEFAULTWADLOCATION4 "/usr/games/SRB2-21"
+#define DEFAULTWADLOCATION1 "/usr/local/share/games/SRB2"
+#define DEFAULTWADLOCATION2 "/usr/local/games/SRB2"
+#define DEFAULTWADLOCATION3 "/usr/share/games/SRB2"
+#define DEFAULTWADLOCATION4 "/usr/games/SRB2"
 #define DEFAULTSEARCHPATH1 "/usr/local/games"
 #define DEFAULTSEARCHPATH2 "/usr/games"
 #define DEFAULTSEARCHPATH3 "/usr/local"
@@ -172,10 +172,6 @@ static char returnWadPath[256];
 #include "../i_joy.h"
 
 #include "../m_argv.h"
-
-// Frame interpolation/uncapped
-#include "../r_main.h"
-#include "../r_fps.h"
 
 #ifdef MAC_ALERT
 #include "macosx/mac_alert.h"
@@ -535,7 +531,7 @@ static void Impl_HandleKeyboardConsoleEvent(KEY_EVENT_RECORD evt, HANDLE co)
 				break;
 			case VK_RETURN:
 				entering_con_command = false;
-				// Fall through.
+				/* FALLTHRU */
 			default:
 				event.data1 = MapVirtualKey(evt.wVirtualKeyCode,2); // convert in to char
 		}
@@ -1569,8 +1565,8 @@ void I_UpdateMumble(const mobj_t *mobj, const listener_t listener)
 		return;
 
 	if(mumble->uiVersion != 2) {
-		wcsncpy(mumble->name, L"SRB2 TSOURDT3RD "VERSIONSTRINGW, 256);
-		wcsncpy(mumble->description, L"Sonic Robo Blast 2 TSOURDT3RD with integrated Mumble Link support.", 2048);
+		wcsncpy(mumble->name, L"SRB2 "VERSIONSTRINGW, 256);
+		wcsncpy(mumble->description, L"Sonic Robo Blast 2 with integrated Mumble Link support.", 2048);
 		mumble->uiVersion = 2;
 	}
 	mumble->uiTick++;
@@ -1991,123 +1987,116 @@ ticcmd_t *I_BaseTiccmd2(void)
 	return &emptycmd2;
 }
 
+#if defined (_WIN32)
+static HMODULE winmm = NULL;
+static DWORD starttickcount = 0; // hack for win2k time bug
+static p_timeGetTime pfntimeGetTime = NULL;
+
+// ---------
+// I_GetTime
+// Use the High Resolution Timer if available,
+// else use the multimedia timer which has 1 millisecond precision on Windowz 95,
+// but lower precision on Windows NT
+// ---------
+
+tic_t I_GetTime(void)
+{
+	tic_t newtics = 0;
+
+	if (!starttickcount) // high precision timer
+	{
+		LARGE_INTEGER currtime; // use only LowPart if high resolution counter is not available
+		static LARGE_INTEGER basetime = {{0, 0}};
+
+		// use this if High Resolution timer is found
+		static LARGE_INTEGER frequency;
+
+		if (!basetime.LowPart)
+		{
+			if (!QueryPerformanceFrequency(&frequency))
+				frequency.QuadPart = 0;
+			else
+				QueryPerformanceCounter(&basetime);
+		}
+
+		if (frequency.LowPart && QueryPerformanceCounter(&currtime))
+		{
+			newtics = (INT32)((currtime.QuadPart - basetime.QuadPart) * NEWTICRATE
+				/ frequency.QuadPart);
+		}
+		else if (pfntimeGetTime)
+		{
+			currtime.LowPart = pfntimeGetTime();
+			if (!basetime.LowPart)
+				basetime.LowPart = currtime.LowPart;
+			newtics = ((currtime.LowPart - basetime.LowPart)/(1000/NEWTICRATE));
+		}
+	}
+	else
+		newtics = (GetTickCount() - starttickcount)/(1000/NEWTICRATE);
+
+	return newtics;
+}
+
+static void I_ShutdownTimer(void)
+{
+	pfntimeGetTime = NULL;
+	if (winmm)
+	{
+		p_timeEndPeriod pfntimeEndPeriod = (p_timeEndPeriod)(LPVOID)GetProcAddress(winmm, "timeEndPeriod");
+		if (pfntimeEndPeriod)
+			pfntimeEndPeriod(1);
+		FreeLibrary(winmm);
+		winmm = NULL;
+	}
+}
+#else
 //
 // I_GetTime
 // returns time in 1/TICRATE second tics
 //
-
-static Uint64 timer_frequency;
-
-static double tic_frequency;
-static Uint64 tic_epoch;
-static double elapsed_tics;
-
-static void UpdateElapsedTics(void)
+tic_t I_GetTime (void)
 {
-	const Uint64 now = SDL_GetPerformanceCounter();
+	static Uint64 basetime = 0;
+		   Uint64 ticks = SDL_GetTicks();
 
-	elapsed_tics += (now - tic_epoch) / tic_frequency;
-	tic_epoch = now; // moving epoch
-}
+	if (!basetime)
+		basetime = ticks;
 
-tic_t I_GetTime(void)
-{
-	UpdateElapsedTics();
-	return (tic_t) floor(elapsed_tics);
-}
+	ticks -= basetime;
 
-float I_GetTimeFrac(void)
-{
-	UpdateElapsedTics();
-	return elapsed_tics;
+	ticks = (ticks*TICRATE);
+
+	ticks = (ticks/1000);
+
+	return (tic_t)ticks;
 }
+#endif
 
 //
-// I_GetPreciseTime
-// returns time in precise_t
-//
-precise_t I_GetPreciseTime(void)
-{
-	return SDL_GetPerformanceCounter();
-}
-
-int I_PreciseToMicros(precise_t d)
-{
-	// d is going to be converted into a double. So remove the highest bits
-	// to avoid loss of precision in the lower bits, for the (probably rare) case
-	// that the higher bits are actually used.
-	d &= ((precise_t)1 << 53) - 1; // The mantissa of a double can handle 53 bits at most.
-	// The resulting double from the calculation is converted first to UINT64 to avoid overflow,
-	// which is undefined behaviour when converting floating point values to integers.
-	return (int)(UINT64)(d / (timer_frequency / 1000000.0));
-}
-
-//
-// I_GetFrameTime
-// returns time in 1/fpscap second tics
-//
-static UINT32 frame_rate;
-
-static double frame_frequency;
-static UINT64 frame_epoch;
-static double elapsed_frames;
-
-static void I_InitFrameTime(const UINT64 now, const UINT32 cap)
-{
-	frame_rate = cap;
-	frame_epoch = now;
-
-	//elapsed_frames = 0.0;
-
-	if (frame_rate == 0)
-	{
-		// Shouldn't be used, but just in case...?
-		frame_frequency = 1.0;
-		return;
-	}
-
-	frame_frequency = timer_frequency / (double)frame_rate;
-}
-
-double I_GetFrameTime(void)
-{
-	const UINT64 now = SDL_GetPerformanceCounter();
-	const UINT32 cap = R_GetFramerateCap();
-
-	if (cap != frame_rate)
-	{
-		// Maybe do this in a OnChange function for cv_fpscap?
-		I_InitFrameTime(now, cap);
-	}
-
-	if (frame_rate == 0)
-	{
-		// Always advance a frame.
-		elapsed_frames += 1.0;
-	}
-	else
-	{
-		elapsed_frames += (now - frame_epoch) / frame_frequency;
-	}
-
-	frame_epoch = now; // moving epoch
-	return elapsed_frames;
-}
-
-//
-// I_StartupTimer
+//I_StartupTimer
 //
 void I_StartupTimer(void)
 {
-	timer_frequency = SDL_GetPerformanceFrequency();
-	tic_epoch       = SDL_GetPerformanceCounter();
-
-	tic_frequency   = timer_frequency / (double)NEWTICRATE;
-	elapsed_tics    = 0.0;
-
-	I_InitFrameTime(tic_epoch, R_GetFramerateCap());
-	elapsed_frames  = 0.0;
+#ifdef _WIN32
+	// for win2k time bug
+	if (M_CheckParm("-gettickcount"))
+	{
+		starttickcount = GetTickCount();
+		CONS_Printf("%s", M_GetText("Using GetTickCount()\n"));
+	}
+	winmm = LoadLibraryA("winmm.dll");
+	if (winmm)
+	{
+		p_timeEndPeriod pfntimeBeginPeriod = (p_timeEndPeriod)(LPVOID)GetProcAddress(winmm, "timeBeginPeriod");
+		if (pfntimeBeginPeriod)
+			pfntimeBeginPeriod(1);
+		pfntimeGetTime = (p_timeGetTime)(LPVOID)GetProcAddress(winmm, "timeGetTime");
+	}
+	I_AddExitFunc(I_ShutdownTimer);
+#endif
 }
+
 
 
 void I_Sleep(void)
@@ -2116,71 +2105,13 @@ void I_Sleep(void)
 		SDL_Delay(cv_sleep.value);
 }
 
-//
-// I_FrameCapSleep
-// Sleeps for a variable amount of time, depending on how much time the frame took.
-//
-boolean I_FrameCapSleep(const double t)
-{
-	// SDL_Delay(1) gives me a range of around 1.95ms to 2.05ms.
-	// Has a bit extra to be totally safe.
-	const double delayGranularity = 2.1;
-	double frameMS = 0.0;
-
-	double curTime = 0.0;
-	double destTime = 0.0;
-	double sleepTime = 0.0;
-
-	if (frame_rate == 0)
-	{
-		// We don't want to cap.
-		return false;
-	}
-
-	curTime = I_GetFrameTime();
-	destTime = floor(t) + 1.0;
-
-	if (curTime >= destTime)
-	{
-		// We're already behind schedule.
-		return false;
-	}
-
-	frameMS = frame_rate * 0.001; // 1ms as frame time
-	sleepTime = destTime - (delayGranularity * frameMS);
-
-	while (curTime < destTime)
-	{
-		if (curTime < sleepTime && cv_sleep.value <= 0)
-		{
-			// Wait 1ms at a time (on default settings)
-			// until we're close enough.
-			SDL_Delay(cv_sleep.value);
-		}
-
-		// This part will spin-lock the rest.
-		curTime = I_GetFrameTime();
-	}
-
-	// We took our nap.
-	return true;
-}
-
 INT32 I_StartupSystem(void)
 {
 	SDL_version SDLcompiled;
 	SDL_version SDLlinked;
 	SDL_VERSION(&SDLcompiled)
 	SDL_GetVersion(&SDLlinked);
-//#ifdef HAVE_THREADS
-	//I_start_threads();
-	//I_AddExitFunc(I_stop_threads);
-//#endif
 	I_StartupConsole();
-//#ifdef NEWSIGNALHANDLER
-	//I_Fork();
-//#endif
-	//I_RegisterSignals();
 	I_OutputMsg("Compiled for SDL version: %d.%d.%d\n",
 	 SDLcompiled.major, SDLcompiled.minor, SDLcompiled.patch);
 	I_OutputMsg("Linked with SDL version: %d.%d.%d\n",
@@ -2192,8 +2123,6 @@ INT32 I_StartupSystem(void)
 #endif
 	return 0;
 }
-
-
 
 //
 // I_Quit
@@ -2307,7 +2236,7 @@ void I_Error(const char *error, ...)
 			// which should fail gracefully if it can't put a message box up
 			// on the target system
 			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-				"SRB2 TSOURDT3RD "VERSIONSTRING" Recursive Error",
+				"SRB2 "VERSIONSTRING" Recursive Error",
 				buffer, NULL);
 
 			W_Shutdown();
@@ -2352,7 +2281,7 @@ void I_Error(const char *error, ...)
 	// which should fail gracefully if it can't put a message box up
 	// on the target system
 	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-		"SRB2 TSOURDT3RD "VERSIONSTRING" Error",
+		"SRB2 "VERSIONSTRING" Error",
 		buffer, NULL);
 	// Note that SDL_ShowSimpleMessageBox does *not* require SDL to be
 	// initialized at the time, so calling it after SDL_Quit() is

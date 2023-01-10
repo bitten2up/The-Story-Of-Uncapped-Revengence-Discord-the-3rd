@@ -165,7 +165,7 @@ fixed_t P_ReturnThrustY(mobj_t *mo, angle_t angle, fixed_t move)
 boolean P_AutoPause(void)
 {
 	// Don't pause even on menu-up or focus-lost in netgames or record attack
-	if (netgame || modeattacking)
+	if (netgame || modeattacking || gamestate == GS_TITLESCREEN)
 		return false;
 
 	return (menuactive || window_notinfocus);
@@ -629,7 +629,7 @@ static void P_DeNightserizePlayer(player_t *player)
 		if (!(mo2->type == MT_NIGHTSDRONE))
 			continue;
 
-		if (mo2->flags & MF_AMBUSH)
+		if (mo2->flags2 & MF2_AMBUSH)
 			P_DamageMobj(player->mo, NULL, NULL, 10000);
 
 		break;
@@ -4984,7 +4984,7 @@ static void P_NightsTransferPoints(player_t *player, fixed_t xspeed, fixed_t rad
 		boolean transfer1last = false;
 		boolean transfer2last = false;
 		vertex_t vertices[4];
-		fixed_t truexspeed = xspeed*(!(player->pflags & PF_TRANSFERTOCLOSEST) && player->mo->target->flags & MF_AMBUSH ? -1 : 1);
+		fixed_t truexspeed = xspeed*(!(player->pflags & PF_TRANSFERTOCLOSEST) && player->mo->target->flags2 & MF2_AMBUSH ? -1 : 1);
 
 		// Find next waypoint
 		for (th = thinkercap.next; th != &thinkercap; th = th->next)
@@ -5649,7 +5649,7 @@ static void P_NiGHTSMovement(player_t *player)
 
 	// The 'ambush' flag says you should rotate
 	// the other way around the axis.
-	if (player->mo->target->flags & MF_AMBUSH)
+	if (player->mo->target->flags2 & MF2_AMBUSH)
 		backwardaxis = true;
 
 	player->angle_pos = R_PointToAngle2(player->mo->target->x, player->mo->target->y, player->mo->x, player->mo->y);
@@ -5854,8 +5854,6 @@ static void P_NiGHTSMovement(player_t *player)
 		}
 		else // AngleFixed(R_PointToAngle2()) results in slight inaccuracy! Don't use it unless movement is on both axises.
 			newangle = (INT16)FixedInt(AngleFixed(R_PointToAngle2(0,0, cmd->sidemove*FRACUNIT, cmd->forwardmove*FRACUNIT)));
-		
-		newangle -= player->viewrollangle / ANG1;
 
 		if (newangle < 0 && moved)
 			newangle = (INT16)(360+newangle);
@@ -6992,7 +6990,7 @@ static void P_MovePlayer(player_t *player)
 	}
 
 #ifdef HWRENDER
-	if (rendermode != render_soft && rendermode != render_none && cv_fovchange.value)
+	if (rendermode != render_soft && rendermode != render_none && cv_grfovchange.value)
 	{
 		fixed_t speed;
 		const fixed_t runnyspeed = 20*FRACUNIT;
@@ -7973,7 +7971,7 @@ boolean P_MoveChaseCamera(player_t *player, camera_t *thiscam, boolean resetcall
 		}
 		else if (mo->target)
 		{
-			if (mo->target->flags & MF_AMBUSH)
+			if (mo->target->flags2 & MF2_AMBUSH)
 				angle = R_PointToAngle2(mo->target->x, mo->target->y, mo->x, mo->y);
 			else
 				angle = R_PointToAngle2(mo->x, mo->y, mo->target->x, mo->target->y);
@@ -8051,10 +8049,6 @@ boolean P_MoveChaseCamera(player_t *player, camera_t *thiscam, boolean resetcall
 		dist = 480<<FRACBITS;
 	else if (player->pflags & PF_NIGHTSMODE)
 		dist = 320<<FRACBITS;
-#ifdef HWRENDER
-	else if (rendermode == render_opengl && !cv_glshearing.value)
-		dist = FixedMul(dist, FINECOSINE((focusaiming>>ANGLETOFINESHIFT) & FINEMASK));
-#endif
 	else
 	{
 		dist = camdist;
@@ -8637,6 +8631,25 @@ static void P_CalcPostImg(player_t *player)
 	if (player->mo->eflags & MFE_VERTICALFLIP)
 		*type = postimg_flip;
 
+	// miru: postimg types and params need to be set here
+
+	if (player->viewrollangle != 0)
+	{
+		*type = postimg_roll;
+		*param = (player->viewrollangle);
+	}
+
+	//miru: Motion blur won't work without this i guess, either way its enabled
+	//TODO: Opengl motion blur
+	// Motion blur
+	if (player->mo && P_CheckMotionBlur())
+	{
+		*type = postimg_motion;
+		*param = 5;
+	}
+
+	(void)param;
+/*
 #if 1
 	(void)param;
 #else
@@ -8649,7 +8662,7 @@ static void P_CalcPostImg(player_t *player)
 		if (*param > 5)
 			*param = 5;
 	}
-#endif
+#endif*/
 }
 
 void P_DoPityCheck(player_t *player)

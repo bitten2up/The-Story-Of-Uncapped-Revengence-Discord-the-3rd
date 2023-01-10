@@ -41,9 +41,7 @@ UINT8 *screens[5];
 static CV_PossibleValue_t gamma_cons_t[] = {{0, "MIN"}, {4, "MAX"}, {0, NULL}};
 static void CV_usegamma_OnChange(void);
 
-static CV_PossibleValue_t ticrate_cons_t[] = {{0, "No"}, {1, "Full"}, {2, "Compact"}, {0, NULL}};
-consvar_t cv_ticrate = {"showfps", "No", CV_SAVE, ticrate_cons_t, NULL};
-
+consvar_t cv_ticrate = {"showfps", "No", 0, CV_YesNo, NULL, 0, NULL, NULL, 0, 0, NULL};
 consvar_t cv_usegamma = {"gamma", "0", CV_SAVE|CV_CALL, gamma_cons_t, CV_usegamma_OnChange, 0, NULL, NULL, 0, 0, NULL};
 
 consvar_t cv_allcaps = {"allcaps", "Off", 0, CV_OnOff, NULL, 0, NULL, NULL, 0, 0, NULL};
@@ -63,7 +61,7 @@ static CV_PossibleValue_t grgamma_cons_t[] = {{1, "MIN"}, {255, "MAX"}, {0, NULL
 static CV_PossibleValue_t grsoftwarefog_cons_t[] = {{0, "Off"}, {1, "On"}, {2, "LightPlanes"}, {0, NULL}};
 
 consvar_t cv_voodoocompatibility = {"gr_voodoocompatibility", "Off", CV_SAVE, CV_OnOff, NULL, 0, NULL, NULL, 0, 0, NULL};
-consvar_t cv_fovchange = {"gr_fovchange", "Off", CV_SAVE, CV_OnOff, NULL, 0, NULL, NULL, 0, 0, NULL};
+consvar_t cv_grfovchange = {"gr_fovchange", "Off", CV_SAVE, CV_OnOff, NULL, 0, NULL, NULL, 0, 0, NULL};
 consvar_t cv_grfog = {"gr_fog", "On", CV_SAVE, CV_OnOff, NULL, 0, NULL, NULL, 0, 0, NULL};
 consvar_t cv_grfogcolor = {"gr_fogcolor", "AAAAAA", CV_SAVE, NULL, NULL, 0, NULL, NULL, 0, 0, NULL};
 consvar_t cv_grsoftwarefog = {"gr_softwarefog", "Off", CV_SAVE, grsoftwarefog_cons_t, NULL, 0, NULL, NULL, 0, 0, NULL};
@@ -1500,6 +1498,12 @@ void V_DrawSmallString(INT32 x, INT32 y, INT32 option, const char *string)
 	}
 }
 
+void V_DrawCenteredSmallString(INT32 x, INT32 y, INT32 option, const char *string)
+{
+	x -= V_SmallStringWidth(string, option)/2;
+	V_DrawSmallString(x, y, option, string);
+}
+
 void V_DrawRightAlignedSmallString(INT32 x, INT32 y, INT32 option, const char *string)
 {
 	x -= V_SmallStringWidth(string, option);
@@ -1605,6 +1609,11 @@ void V_DrawThinString(INT32 x, INT32 y, INT32 option, const char *string)
 	}
 }
 
+void V_DrawCenteredThinString(INT32 x, INT32 y, INT32 option, const char *string)
+{
+	x -= V_ThinStringWidth(string, option)/2;
+	V_DrawThinString(x, y, option, string);
+}
 void V_DrawRightAlignedThinString(INT32 x, INT32 y, INT32 option, const char *string)
 {
 	x -= V_ThinStringWidth(string, option);
@@ -2036,6 +2045,7 @@ INT32 V_ThinStringWidth(const char *string, INT32 option)
 boolean *heatshifter = NULL;
 INT32 lastheight = 0;
 INT32 heatindex[2] = { 0, 0 };
+#define ANG2RAD(angle) ((float)((angle)*M_PI)/ANGLE_180)
 
 //
 // V_DoPostProcessor
@@ -2204,6 +2214,87 @@ Unoptimized version
 		heatindex[view] %= vid.height;
 
 		VID_BlitLinearScreen(tmpscr+vid.width*vid.bpp*yoffset, screens[0]+vid.width*vid.bpp*yoffset,
+				vid.width*vid.bpp, height, vid.width*vid.bpp, vid.width);
+	}
+	else if (type == postimg_roll) // miru: View Roll Angle
+	{
+		UINT8 *tmpscr = screens[4];
+		UINT8 *srcscr = screens[0];
+		INT32 x, y;
+		angle_t your_angle = param;
+		float f_angle = ANG2RAD(your_angle);
+		//CONS_Printf("%f\n", f_angle);
+
+		INT32 hwidth = vid.width / 2;
+		INT32 hheight = height / 2;
+
+		float sinma = sin(f_angle);
+
+		float cosma = cos(f_angle);
+
+		float xst = round((cosma * -hwidth - sinma * -hheight) + hwidth);
+		float yst = round((sinma * -hwidth + cosma * -hheight) + hheight);
+
+		// Fills the empty space with a solid color from palette index
+		memset(screens[4], (UINT8)(31), vid.width*vid.height*vid.bpp);
+
+#define OUT_OF_RANGE (xs < 0 || xs >= vid.width || ys < 0 || ys >= height)
+		for (y = 0; y < hheight; y++) {
+			float xs = xst;
+			float ys = yst;
+
+			x = 0;
+
+			while (x < vid.width && OUT_OF_RANGE) {
+				xs += cosma;
+				ys += sinma;
+				x++;
+			}
+
+			for (; x < vid.width && !OUT_OF_RANGE; x++) {
+				INT16 xn = (int) xs,
+					yn = (int) ys;
+
+				tmpscr[x + (y + yoffset) * vid.width] = srcscr[xn + (yn + yoffset) * vid.width];
+
+				xn = vid.width - 1 - xn;
+				yn = height - 1 - yn;
+
+				tmpscr[(vid.width - 1 - x) + (height - 1 - y + yoffset) * vid.width] = srcscr[xn + (yn + yoffset) * vid.width];
+
+				xs += cosma;
+				ys += sinma;
+			}
+
+			xst -= sinma;
+			yst += cosma;
+		}
+#undef OUT_OF_RANGE
+/* reference implementation
+		for(x = 0; x < vid.width; x++) {
+			for(y = 0; y < height; y++) {
+
+				INT32 xt = x - hwidth;
+				INT32 yt = y - hheight;
+
+				INT32 xs = (INT32)round((cosma * xt - sinma * yt) + hwidth);
+				INT32 ys = (INT32)round((sinma * xt + cosma * yt) + hheight);
+
+				if(xs >= 0 && xs < vid.width && ys >= 0 && ys < height)
+				{
+					// set target pixel (x,y) to color at (xs,ys)
+					tmpscr[x + (y + yoffset) * vid.width] = srcscr[xs + (ys + yoffset) * vid.width];
+				}
+				else
+				{
+					// set target pixel (x,y) to some default background
+					tmpscr[x + (y+yoffset)*vid.width] = 0;
+				}
+			}
+		}
+*/
+
+	VID_BlitLinearScreen(tmpscr+vid.width*vid.bpp*yoffset, screens[0]+vid.width*vid.bpp*yoffset,
 				vid.width*vid.bpp, height, vid.width*vid.bpp, vid.width);
 	}
 #endif

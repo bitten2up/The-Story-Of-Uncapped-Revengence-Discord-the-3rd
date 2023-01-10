@@ -1992,8 +1992,6 @@ static boolean CL_ServerConnectionTicker(boolean viams, const char *tmpsave, tic
 			I_UpdateNoVsync(); // page flip or blit buffer
 			if (moviemode)
 				M_SaveFrame();
-			S_UpdateSounds();
-			S_UpdateClosedCaptions();
 		}
 #else
 		CON_Drawer();
@@ -2265,7 +2263,8 @@ static void Command_connect(void)
 		CONS_Printf(M_GetText(
 			"Connect <serveraddress> (port): connect to a server\n"
 			"Connect ANY: connect to the first lan server found\n"
-			"Connect SELF: connect to your own server.\n"));
+			"Connect SELF: connect to your own server.\n"
+			"Connect HOST <map> <gametype>: "));
 		return;
 	}
 
@@ -2280,7 +2279,79 @@ static void Command_connect(void)
 
 	server = false;
 
-	if (!stricmp(COM_Argv(1), "self"))
+    // mirmiru RedEnchilada: host a game from connect
+    if (!stricmp(COM_Argv(1), "HOST"))
+	{
+	    const char *mapname;
+	    INT32 newmapnum;
+
+	    INT32 j, newgametype = INT32_MAX;
+
+	    if (COM_Argc() != 4)
+        {
+            CONS_Printf("Command must be of form \"Connect"
+                        " HOST <MAPxx> <gametype>\".\n");
+            return;
+        }
+
+	    // Get map number from name
+	    mapname = COM_Argv(2);
+
+	    // internal wad lump always: map command doesn't support external files as in doom legacy
+        if (W_CheckNumForName(mapname) == LUMPERROR)
+        {
+            CONS_Alert(CONS_ERROR, M_GetText("Internal game level '%s' not found\n"), mapname);
+            return;
+        }
+
+        if (strlen(mapname) != 5
+        || (newmapnum = M_MapNumber(mapname[3], mapname[4])) == 0)
+        {
+            CONS_Alert(CONS_ERROR, M_GetText("Invalid level name %s\n"), mapname);
+            return;
+        }
+
+        // Get gametype
+        for (j = 0; gametype_cons_t[j].strvalue; j++)
+			if (!strcasecmp(gametype_cons_t[j].strvalue, COM_Argv(3)))
+			{
+				// Don't do any variable setting here. Wait until you get your
+				// map packet first to avoid sending the same info twice!
+				newgametype = gametype_cons_t[j].value;
+
+				break;
+			}
+
+		if (!gametype_cons_t[j].strvalue) // reached end of the list with no match
+		{
+			// assume they gave us a gametype number, which is okay too
+			for (j = 0; gametype_cons_t[j].strvalue != NULL; j++)
+			{
+				if (atoi(COM_Argv(3)) == gametype_cons_t[j].value)
+				{
+					newgametype = gametype_cons_t[j].value;
+					break;
+				}
+			}
+		}
+
+#if 0 // gametype will never equal INT32_MAX
+	if (gametype == INT32_MAX)
+        {
+            CONS_Alert(CONS_ERROR, M_GetText("Invalid gametype %s\n"), COM_Argv(3));
+            return;
+        }
+#endif
+
+        // Goodbye, we're off to host a server
+        CV_SetValue(&cv_nextmap, newmapnum);
+        CV_SetValue(&cv_newgametype, newgametype);
+        server = true;
+        M_StartServer(0);
+
+        return;
+	}
+	else if (!stricmp(COM_Argv(1), "self"))
 	{
 		servernode = 0;
 		server = true;

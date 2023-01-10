@@ -107,8 +107,8 @@ typedef enum
 	MF_NOSECTOR         = 1<<3,
 	// Don't use the blocklinks (inert but displayable)
 	MF_NOBLOCKMAP       = 1<<4,
-	// Not to be activated by sound, deaf monster.
-	MF_AMBUSH           = 1<<5,
+	// Thin, paper-like collision bound (for visual equivalent, see FF_PAPERSPRITE)
+	MF_PAPERCOLLISION            = 1<<5,
 	// You can push this object. It can activate switches and things by pushing it on top.
 	MF_PUSHABLE         = 1<<6,
 	// Object is a boss.
@@ -193,6 +193,7 @@ typedef enum
 	MF2_BOSSNOTRAP     = 1<<25, // No Egg Trap after boss
 	MF2_BOSSFLEE       = 1<<26, // Boss is fleeing!
 	MF2_BOSSDEAD       = 1<<27, // Boss is dead! (Not necessarily fleeing, if a fleeing point doesn't exist.)
+	MF2_AMBUSH         = 1<<28, // Alternate behaviour typically set by MTF_AMBUSH
 	// free: to and including 1<<31
 } mobjflag2_t;
 
@@ -265,8 +266,6 @@ typedef struct mobj_s
 
 	// Info for drawing: position.
 	fixed_t x, y, z;
-	fixed_t old_x, old_y, old_z; // position interpolation
-	fixed_t old_x2, old_y2, old_z2;
 
 	// More list: links in sector (if needed)
 	struct mobj_s *snext;
@@ -274,8 +273,6 @@ typedef struct mobj_s
 
 	// More drawing info: to determine current sprite.
 	angle_t angle;  // orientation
-	angle_t old_angle; // orientation interpolation
-	angle_t old_angle2;
 	spritenum_t sprite; // used to find patch_t and flip value
 	UINT32 frame; // frame number, plus bits see p_pspr.h
 	UINT16 anim_duration; // for FF_ANIMATE states
@@ -384,9 +381,6 @@ typedef struct precipmobj_s
 
 	// Info for drawing: position.
 	fixed_t x, y, z;
-	fixed_t old_x, old_y, old_z; // position interpolation
-	fixed_t old_x2, old_y2, old_z2;
-
 
 	// More list: links in sector (if needed)
 	struct precipmobj_s *snext;
@@ -394,8 +388,6 @@ typedef struct precipmobj_s
 
 	// More drawing info: to determine current sprite.
 	angle_t angle;  // orientation
-	angle_t old_angle; // orientation interpolation
-	angle_t old_angle2;
 	spritenum_t sprite; // used to find patch_t and flip value
 	UINT32 frame; // frame number, plus bits see p_pspr.h
 	UINT16 anim_duration; // for FF_ANIMATE states
@@ -466,3 +458,8 @@ extern INT32 numhuntemeralds;
 extern boolean runemeraldmanager;
 extern INT32 numstarposts;
 #endif
+
+boolean camera_motionblur;
+INT32 forward_postimgparam;
+boolean P_CheckMotionBlur(void);
+void P_SetActiveMotionBlur(boolean active, INT32 param);

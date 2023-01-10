@@ -233,6 +233,15 @@ static void P_ClearSingleMapHeaderInfo(INT16 i)
 	mapheaderinfo[num]->levelflags = 0;
 	DEH_WriteUndoline("MENUFLAGS", va("%d", mapheaderinfo[num]->menuflags), UNDO_NONE);
 	mapheaderinfo[num]->menuflags = 0;
+
+	// miru: in order for the custom mapheaderinfo values to work properly, we need to do this
+	DEH_WriteUndoline("LEVELWIPE", va("%d", mapheaderinfo[num]->levelwipe), UNDO_NONE);
+	mapheaderinfo[num]->levelwipe = 0;
+	DEH_WriteUndoline("POSTLEVELWIPE", va("%d", mapheaderinfo[num]->postlevelwipe), UNDO_NONE);
+	mapheaderinfo[num]->postlevelwipe = 0;
+	DEH_WriteUndoline("WIPECOLOR", va("%d", mapheaderinfo[num]->wipecolor), UNDO_NONE);
+	mapheaderinfo[num]->wipecolor = 31;
+
 	// TODO grades support for delfile (pfft yeah right)
 	P_DeleteGrades(num);
 	// an even further impossibility, delfile custom opts support
@@ -2784,21 +2793,35 @@ boolean P_SetupLevel(boolean skipprecip)
 
 	// As oddly named as this is, this handles music only.
 	// We should be fine starting it here.
-	S_Start();
+	/// ... as long as this isn't a titlemap transition, that is
+	if (!titlemapinaction)
+		S_Start();
 
 	// Let's fade to black here
 	// But only if we didn't do the special stage wipe
 	if (rendermode != render_none && !ranspecialwipe)
 	{
-		F_WipeStartScreen();
-		V_DrawFill(0, 0, BASEVIDWIDTH, BASEVIDHEIGHT, 31);
+		// miru: we could add the option to render different wipes here
+		if (mapheaderinfo[gamemap-1] && mapheaderinfo[gamemap-1]->levelwipe && mapheaderinfo[gamemap-1]->levelwipe < 100)
+		{
+			F_WipeStartScreen();
+			V_DrawFill(0, 0, BASEVIDWIDTH, BASEVIDHEIGHT, mapheaderinfo[gamemap-1]->wipecolor);
 
-		F_WipeEndScreen();
-		F_RunWipe(wipedefs[wipe_level_toblack], false);
+			F_WipeEndScreen();
+			F_RunWipe(mapheaderinfo[gamemap-1]->levelwipe, false);
+		}
+		else
+		{
+			F_WipeStartScreen();
+			V_DrawFill(0, 0, BASEVIDWIDTH, BASEVIDHEIGHT, 31);
+
+			F_WipeEndScreen();
+			F_RunWipe(wipedefs[wipe_level_toblack], false);
+		}
 	}
 
 	// Print "SPEEDING OFF TO [ZONE] [ACT 1]..."
-	if (rendermode != render_none)
+	if (!titlemapinaction && rendermode != render_none)
 	{
 		// Don't include these in the fade!
 		char tx[64];
@@ -3095,7 +3118,7 @@ boolean P_SetupLevel(boolean skipprecip)
 
 #ifdef HWRENDER
 		if (rendermode != render_soft && rendermode != render_none)
-			CV_Set(&cv_fov, cv_fov.defaultvalue);
+			CV_Set(&cv_grfov, cv_grfov.defaultvalue);
 #endif
 
 		displayplayer = consoleplayer; // Start with your OWN view, please!

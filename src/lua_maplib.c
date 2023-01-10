@@ -42,6 +42,12 @@ enum sector_e {
 	sector_heightsec,
 	sector_camsec,
 	sector_lines,
+	sector_floorxoffs,
+	sector_flooryoffs,
+	sector_ceilingxoffs,
+	sector_ceilingyoffs,
+	sector_floorpicangle,
+	sector_ceilingpicangle,
 #ifdef ESLOPE
 	sector_ffloors,
 	sector_fslope,
@@ -64,6 +70,12 @@ static const char *const sector_opt[] = {
 	"heightsec",
 	"camsec",
 	"lines",
+	"floor_xoffs",
+	"floor_yoffs",
+	"ceiling_xoffs",
+	"ceiling_yoffs",
+	"floorpic_angle",
+	"ceilingpic_angle",
 	"ffloors",
 #ifdef ESLOPE
 	"f_slope",
@@ -172,8 +184,14 @@ enum ffloor_e {
 	ffloor_topheight,
 	ffloor_toppic,
 	ffloor_toplightlevel,
+	ffloor_topxoffs,
+	ffloor_topyoffs,
+	ffloor_topangle,
 	ffloor_bottomheight,
 	ffloor_bottompic,
+	ffloor_bottomxoffs,
+	ffloor_bottomyoffs,
+	ffloor_bottomangle,
 #ifdef ESLOPE
 	ffloor_tslope,
 	ffloor_bslope,
@@ -192,8 +210,14 @@ static const char *const ffloor_opt[] = {
 	"topheight",
 	"toppic",
 	"toplightlevel",
+	"topxoffs",
+	"topyoffs",
+	"topangle",
 	"bottomheight",
 	"bottompic",
+	"bottomxoffs",
+	"bottomyoffs",
+	"bottomangle",
 #ifdef ESLOPE
 	"t_slope",
 	"b_slope",
@@ -430,6 +454,24 @@ static int sector_get(lua_State *L)
 		lua_pushlstring(L, levelflat->name, i);
 		return 1;
 	}
+	case sector_floorxoffs:
+		lua_pushfixed(L, sector->floor_xoffs);
+		return 1;
+	case sector_flooryoffs:
+		lua_pushfixed(L, sector->floor_yoffs);
+		return 1;
+	case sector_ceilingxoffs:
+		lua_pushfixed(L, sector->ceiling_xoffs);
+		return 1;
+	case sector_ceilingyoffs:
+		lua_pushfixed(L, sector->ceiling_yoffs);
+		return 1;
+	case sector_floorpicangle:
+		lua_pushangle(L, sector->floorpic_angle);
+		return 1;
+	case sector_ceilingpicangle:
+		lua_pushangle(L, sector->ceilingpic_angle);
+		return 1;
 	case sector_lightlevel:
 		lua_pushinteger(L, sector->lightlevel);
 		return 1;
@@ -531,6 +573,24 @@ static int sector_set(lua_State *L)
 		break;
 	case sector_ceilingpic:
 		sector->ceilingpic = P_AddLevelFlatRuntime(luaL_checkstring(L, 3));
+		break;
+	case sector_floorxoffs:
+		sector->floor_xoffs = luaL_checkfixed(L, 3);
+		break;
+	case sector_flooryoffs:
+		sector->floor_yoffs = luaL_checkfixed(L, 3);
+		break;
+	case sector_ceilingxoffs:
+		sector->ceiling_xoffs = luaL_checkfixed(L, 3);
+		break;
+	case sector_ceilingyoffs:
+		sector->ceiling_yoffs = luaL_checkfixed(L, 3);
+		break;
+	case sector_floorpicangle:
+		sector->floorpic_angle = luaL_checkangle(L, 3);
+		break;
+	case sector_ceilingpicangle:
+		sector->ceilingpic_angle = luaL_checkangle(L, 3);
 		break;
 	case sector_lightlevel:
 		sector->lightlevel = (INT16)luaL_checkinteger(L, 3);
@@ -1120,6 +1180,15 @@ static int ffloor_get(lua_State *L)
 	case ffloor_toplightlevel:
 		lua_pushinteger(L, *ffloor->toplightlevel);
 		return 1;
+	case ffloor_topxoffs:
+		lua_pushfixed(L, *ffloor->topxoffs);
+		return 1;
+	case ffloor_topyoffs:
+		lua_pushfixed(L, *ffloor->topyoffs);
+		return 1;
+	case ffloor_topangle:
+		lua_pushangle(L, *ffloor->topangle);
+		return 1;
 	case ffloor_bottomheight:
 		lua_pushfixed(L, *ffloor->bottomheight);
 		return 1;
@@ -1131,6 +1200,15 @@ static int ffloor_get(lua_State *L)
 		lua_pushlstring(L, levelflat->name, i);
 		return 1;
 	}
+	case ffloor_bottomxoffs:
+		lua_pushfixed(L, *ffloor->bottomxoffs);
+		return 1;
+	case ffloor_bottomyoffs:
+		lua_pushfixed(L, *ffloor->bottomyoffs);
+		return 1;
+	case ffloor_bottomangle:
+		lua_pushangle(L, *ffloor->bottomangle);
+		return 1;
 #ifdef ESLOPE
 	case ffloor_tslope:
 		LUA_PushUserdata(L, *ffloor->t_slope, META_SLOPE);

@@ -44,38 +44,13 @@ UINT32 I_GetFreeMem(UINT32 *total);
 
 /**	\brief  Called by D_SRB2Loop, returns current time in tics.
 */
-/**	\brief  Called by D_SRB2Loop, returns current time in game tics.
-*/
 tic_t I_GetTime(void);
-
-/** \brief  Get the current time in game tics, including fractions.
-*/
-float I_GetTimeFrac(void);
-
-/**	\brief	Returns precise time value for performance measurement.
-  */
-precise_t I_GetPreciseTime(void);
-
-/**	\brief	Converts a precise_t to microseconds and casts it to a 32 bit integer.
-  */
-int I_PreciseToMicros(precise_t d);
-
-/** \brief  Get the current time in rendering tics, including fractions.
-*/
-double I_GetFrameTime(void);
 
 /**	\brief	The I_Sleep function
 
 	\return	void
 */
 void I_Sleep(void);
-
-/**	\brief	Sleeps for a variable amount of time, depending on how much time the last frame took.
-
-	\return	void
-*/
-boolean I_FrameCapSleep(const double frameStart);
-
 
 /**	\brief Get events
 
