@@ -146,12 +146,14 @@ consvar_t cv_flipcam = CVAR_INIT ("flipcam", "No", CV_SAVE|CV_CALL|CV_NOINIT, CV
 consvar_t cv_flipcam2 = CVAR_INIT ("flipcam2", "No", CV_SAVE|CV_CALL|CV_NOINIT, CV_YesNo, FlipCam2_OnChange);
 
 // STAR NOTE: i was here lol
-static CV_PossibleValue_t shadow_cons_t[] = {{0, "Off"}, {1, "Drop"}, {2, "OpenGL Realistic"}, {0, NULL}};
+static CV_PossibleValue_t shadow_cons_t[] = {{0, "Off"}, {1, "Drop"}, {2, "OpenGL Realistic"}, {3, "Bitten's Experimental"}, {0, NULL}};
 consvar_t cv_shadow = CVAR_INIT ("shadow", "Drop", CV_SAVE|CV_CALL, shadow_cons_t, STAR_Shadow_OnChange);
 
 // STAR STUFF //
 consvar_t cv_allobjectshaveshadows = CVAR_INIT ("allobjectshaveshadows", "No", CV_SAVE, CV_YesNo, NULL);
 consvar_t cv_realisticshadowscanrotate = CVAR_INIT ("realisticshadowscanrotate", "No", CV_SAVE, CV_YesNo, NULL);
+consvar_t cv_realisticshadowsonground = CVAR_INIT ("realisticshadowsonground", "No", CV_SAVE, CV_YesNo, NULL);
+consvar_t cv_shadowtint = CVAR_INIT ("shadowtint", "Yes", CV_SAVE, CV_YesNo, NULL);
 // END THIS //
 
 consvar_t cv_skybox = CVAR_INIT ("skybox", "On", CV_SAVE, CV_OnOff, NULL);
@@ -1591,6 +1593,8 @@ void R_RegisterEngineStuff(void)
 	// STAR STUFF //
 	CV_RegisterVar(&cv_allobjectshaveshadows);
 	CV_RegisterVar(&cv_realisticshadowscanrotate);
+	CV_RegisterVar(&cv_realisticshadowsonground);
+	CV_RegisterVar(&cv_shadowtint);
 	// END THAT //
 	CV_RegisterVar(&cv_skybox);
 	CV_RegisterVar(&cv_ffloorclip);

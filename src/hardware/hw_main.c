@@ -3620,7 +3620,7 @@ static void HWR_DrawShadows(gl_vissprite_t *spr, mobj_t *thing, fixed_t scale)
 	if (alpha >= 255) return;
 	alpha = 255 - alpha;
 
-	gpatch = (cv_shadow.value == 2 ? (spr->gpatch) : ((patch_t *)W_CachePatchName("DSHADOW", PU_SPRITE))); // STAR NOTE: i was here lol
+	gpatch = (cv_shadow.value >= 2 ? (spr->gpatch) : ((patch_t *)W_CachePatchName("DSHADOW", PU_SPRITE))); // STAR NOTE: i was here lol
 	if (!(gpatch && ((GLPatch_t *)gpatch->hardware)->mipmap->format)) return;
 	HWR_GetPatch(gpatch);
 
@@ -3648,6 +3648,46 @@ static void HWR_DrawShadows(gl_vissprite_t *spr, mobj_t *thing, fixed_t scale)
 
 	// STAR NOTE //
 	if (cv_shadow.value == 2)
+	{
+		shadowVerts[0].x = shadowVerts[3].x = spr->x1;
+		shadowVerts[2].x = shadowVerts[1].x = spr->x2;
+		shadowVerts[0].z = shadowVerts[3].z = spr->z1;
+		shadowVerts[2].z = shadowVerts[1].z = spr->z2;
+
+		if (thing && fabsf(fscale - 1.0f) > 1.0E-36f)
+		{
+			// Always a pixel above the floor, perfectly flat.
+			for (i = 0; i < 4; i++)
+			{
+				if (groundslope)
+					slopez = P_GetSlopeZAt(groundslope, FLOAT_TO_FIXED(shadowVerts[i].x), FLOAT_TO_FIXED(shadowVerts[i].z));
+				shadowVerts[i].y = (groundslope ? FIXED_TO_FLOAT(slopez) : FIXED_TO_FLOAT(groundz))/2 + flip * 0.05f;
+			}
+
+			// Now transform the TOP vertices along the floor in the direction of the camera
+			shadowVerts[3].x = spr->x1 + ((gpatch->height * FIXED_TO_FLOAT(scale)) + offset) * gl_viewcos;
+			shadowVerts[2].x = spr->x2 + ((gpatch->height * FIXED_TO_FLOAT(scale)) + offset) * gl_viewcos;
+			shadowVerts[3].z = spr->z1 + ((gpatch->height * FIXED_TO_FLOAT(scale)) + offset) * gl_viewsin;
+			shadowVerts[2].z = spr->z2 + ((gpatch->height * FIXED_TO_FLOAT(scale)) + offset) * gl_viewsin;
+		}
+		else
+		{
+			// Always a pixel above the floor, perfectly flat.
+			for (i = 0; i < 4; i++)
+			{
+				if (groundslope)
+					slopez = P_GetSlopeZAt(groundslope, FLOAT_TO_FIXED(shadowVerts[i].x), FLOAT_TO_FIXED(shadowVerts[i].z));
+				shadowVerts[i].y = (groundslope ? FIXED_TO_FLOAT(slopez) : FIXED_TO_FLOAT(groundz))/2 + flip * 0.05f;
+			}
+
+			// Now transform the TOP vertices along the floor in the direction of the camera
+			shadowVerts[3].x = spr->x1 + (gpatch->height + offset) * gl_viewcos;
+			shadowVerts[2].x = spr->x2 + (gpatch->height + offset) * gl_viewcos;
+			shadowVerts[3].z = spr->z1 + (gpatch->height + offset) * gl_viewsin;
+			shadowVerts[2].z = spr->z2 + (gpatch->height + offset) * gl_viewsin;
+		}
+	}
+	if (cv_shadow.value == 3)
 	{
 		shadowVerts[0].x = shadowVerts[3].x = spr->x1;
 		shadowVerts[2].x = shadowVerts[1].x = spr->x2;
@@ -3751,6 +3791,12 @@ static void HWR_DrawShadows(gl_vissprite_t *spr, mobj_t *thing, fixed_t scale)
 #endif
 	}
 	// END THAT //
+	// Or not, this is bitten's experimental shadow code
+	else if (cv_shadow.value == 3)
+	{
+
+	}
+	// Now end that //
 
 	if (!(thing->renderflags & RF_NOCOLORMAPS))
 	{
@@ -3766,8 +3812,14 @@ static void HWR_DrawShadows(gl_vissprite_t *spr, mobj_t *thing, fixed_t scale)
 			colormap = thing->subsector->sector->extra_colormap;
 	}
 
-	HWR_Lighting(&sSurf, 0, colormap);
-	sSurf.PolyColor.s.alpha = alpha;
+	// STAR STUFF //
+	if (cv_shadowtint.value)
+	{
+		HWR_Lighting(&sSurf, 0, colormap);
+		sSurf.PolyColor.s.alpha = alpha;
+	}
+	// END THAT //
+
 
 	if (HWR_UseShader())
 	{
@@ -3776,7 +3828,7 @@ static void HWR_DrawShadows(gl_vissprite_t *spr, mobj_t *thing, fixed_t scale)
 	}
 
 	// STAR STUFF //
-	if (cv_shadow.value == 2)
+	if (cv_shadow.value >= 2)
 	{
 		sSurf.PolyColor.s.red = 0x00;
 		sSurf.PolyColor.s.blue = 0x00;
@@ -5027,7 +5079,7 @@ static void HWR_DrawSprites(void)
 			// STAR NOTE: i was here lol
 			if (spr->mobj && ((!cv_allobjectshaveshadows.value && spr->mobj->shadowscale) || (cv_allobjectshaveshadows.value)))
 			{
-				if ((cv_shadow.value == 1 || cv_shadow.value == 2) && !skipshadow)
+				if ((cv_shadow.value == 1 || cv_shadow.value >= 2) && !skipshadow)
 					HWR_DrawShadows(spr, spr->mobj, (cv_allobjectshaveshadows.value ? 1*FRACUNIT : spr->mobj->shadowscale));
 			}
 
